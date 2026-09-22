@@ -308,8 +308,7 @@ async function cli_file(args: string[]): Promise<void> {
     if (checkup) {
       return await cli_checkup(file);
     }
-    const seen = new Map<string, string | null>();
-    const book = await book_read(file, undefined, seen);
+    const { book, seen } = await book_read(file);
     if (only || verdict) {
       process.exitCode = cli_verdict(book, verdict);
       return;
@@ -375,7 +374,8 @@ async function cli_checkup(file: string): Promise<void> {
     try {
       const own = /^(?:[\t\r ]*(?:(?:#|import )[^\n]*)?\n)*[\t ]*import Base\s/
         .test(fs.readFileSync(at, "utf8"));
-      code = book_run(await book_read(at, own ? base : undefined), [at]);
+      const { book } = await book_read(at, own ? base : undefined);
+      code = book_run(book, [at]);
     } catch (e) {
       cli_say(2, book_err(e) + "\n");
     }
@@ -671,8 +671,7 @@ async function cli_bundle(page: string, dir: string): Promise<void> {
 // left) to the hub with its proof of work, and prints the import line.
 // First it prints the terms and the license the hub will show.
 async function cli_publish(file: string, named?: string): Promise<void> {
-  const seen = new Map<string, string | null>();
-  const book = await book_read(file, undefined, seen);
+  const { book, seen } = await book_read(file);
   const files = pkg_files(file, book, seen);
   const entry = Object.keys(files)[0];
   const name  = path.basename(entry, ".bend").replaceAll("-", "_");
@@ -1048,28 +1047,36 @@ function cli_fail(msg: string): never {
 // Book
 // ====
 
-async function book_read(file: string, base?: Bend.Book,
-  seen = new Map<string, string | null>()): Promise<Bend.Book> {
-  const book = base === undefined ? Bend.book_nil() : book_seed(base);
-  if (base !== undefined) {
-    seen.set(BASE, "");
-  }
+export type BookState = {
+  book: Bend.Book;
+  seen: Map<string, string | null>;
+};
+
+// unsafe_seed must be a complete checked prefix with its matching loader
+// map: its sources, namespaces and checker version are trusted here.
+// Term graphs remain shared. n0 marks the file's own claims.
+export async function book_read(file: string,
+  unsafe_seed?: BookState): Promise<BookState & { n0: number }> {
+  const book = unsafe_seed === undefined
+    ? Bend.book_nil() : book_seed(unsafe_seed.book);
+  const seen = new Map(unsafe_seed?.seen);
+  const done = book.order.length;
   try {
-    await Bend.book_load(book, file, "", seen);
+    const n0 = await Bend.book_load(book, file, "", seen);
     const laws = path.join(path.dirname(file), "LAWS.bend");
     if (path.basename(file) === "PROOF.bend" && fs.existsSync(laws)
       && !seen.has(fs.realpathSync(laws))) {
       throw "Error: PROOF.bend must import ./LAWS.bend";
     }
-    Bend.book_valid(book, base?.order.length ?? 0);
+    Bend.book_valid(book, done);
     if (book.hols > 0) {
       throw "Error: " + String(book.hols) + " TODO" + (book.hols === 1 ? "" : "s")
         + " found.\nThe code is incomplete, and not a valid proof yet.";
     }
+    return { book, seen, n0 };
   } catch (e) {
     throw new Check_Fail(e);
   }
-  return book;
 }
 
 // a failed check: bend2's reason, which book_err prints under FAIL
@@ -1130,7 +1137,8 @@ function book_err(e: unknown): string {
 
 async function load_js(path: string): Promise<string> {
   try {
-    return Comp.js_lib(await book_read(path), true);
+    const { book } = await book_read(path);
+    return Comp.js_lib(book, true);
   } catch (e) {
     throw new Error(book_err(e));
   }
