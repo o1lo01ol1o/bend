@@ -2536,7 +2536,7 @@ export function parse_def(p: Parse, u: Bool): void {
     if (tele.length < law.x) {
       parse_fail(p, "a name for each ~ clause of the law (" + String(law.x) + ")");
     }
-    def = law;
+    def = book.tlds[k] = { ...law };
     def.n = tele.length;
   } else {
     if (!parse_take(p, "->")) {
@@ -3890,8 +3890,8 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 
 // Valid
 // =====
-// book_valid throws the first Err (its first done entries are taken
-// as validated: a harness resumes past a seeded base); an order entry
+// book_valid throws the first Err (from the done-th entry on: a book
+// whose tables extend a checked parent's resumes past it); an order entry
 // is an event. every def declares (bodiless) up front and defines at
 // its event (a law: type checked at its law, defined at its fill), so
 // it is visible and stuck before, and unfolds after; an ADT declares
@@ -3918,15 +3918,15 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 export function book_valid(book: Book, done: number = 0): void {
   const tlds = book.tlds;
   const last = new Map<Name, number>();
-  for (let i = 0; i < book.order.length; i++) {
+  for (let i = done; i < book.order.length; i++) {
     last.set(book.order[i], i);
   }
-  book.tlds = Object.create(null);
-  for (const k in tlds) {
+  book.tlds = Object.create(Object.getPrototypeOf(tlds));
+  for (const k of Object.keys(tlds)) {
     const t = tlds[k];
     book.tlds[k] = last.has(k) && t.$ === "Def" ? { ...t, v: null } : t;
   }
-  for (let i = 0; i < book.order.length; i++) {
+  for (let i = done; i < book.order.length; i++) {
     const k   = book.order[i];
     const tld = tlds[k];
     const fin = last.get(k) === i;

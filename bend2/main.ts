@@ -350,7 +350,8 @@ async function cli_file(args: string[]): Promise<void> {
 }
 
 // cli_checkup checks and runs each import of the file alone (Base read
-// once, seeded into every module that imports it); one that fails fails it.
+// once, the parent of every module whose first import it is, so each check
+// is its module's cold check); one that fails fails it.
 async function cli_checkup(file: string): Promise<void> {
   const base = await book_read(BASE);
   let bad = false;
@@ -372,8 +373,8 @@ async function cli_checkup(file: string): Promise<void> {
     cli_say(1, "--- " + m[1] + " ---\n");
     let code = 1;
     try {
-      const own = /^(?:[\t\r ]*(?:(?:#|import )[^\n]*)?\n)*[\t ]*import Base\s/
-        .test(fs.readFileSync(at, "utf8"));
+      const head = /^\s*import(\s.*)?$/m.exec(fs.readFileSync(at, "utf8"));
+      const own = /^\s*import\s+Base\s*(#.*)?$/.test(head?.[0] ?? "");
       const { book } = await book_read(at, own ? base : undefined);
       code = book_run(book, [at]);
     } catch (e) {
@@ -1052,13 +1053,16 @@ export type BookState = {
   seen: Map<string, string | null>;
 };
 
-// unsafe_seed must be a complete checked prefix with its matching loader
-// map: its sources, namespaces and checker version are trusted here.
-// Term graphs remain shared. n0 marks the file's own claims.
+// book_read loads and checks a file. unsafe_seed must be a complete checked
+// prefix of the file's own load order, with its matching loader map: its
+// sources, namespaces and checker version are trusted, not verified here.
+// The seed is never written (book_over); its term graphs stay shared, so a
+// later compile may force its elaborations' cells. n0 marks the file's own
+// claims.
 export async function book_read(file: string,
   unsafe_seed?: BookState): Promise<BookState & { n0: number }> {
   const book = unsafe_seed === undefined
-    ? Bend.book_nil() : book_seed(unsafe_seed.book);
+    ? Bend.book_nil() : book_over(unsafe_seed.book);
   const seen = new Map(unsafe_seed?.seen);
   const done = book.order.length;
   try {
@@ -1084,17 +1088,27 @@ class Check_Fail {
   constructor(readonly why: unknown) {}
 }
 
-function book_seed(base: Bend.Book): Bend.Book {
-  const book = Bend.book_nil();
-  for (const k of Object.keys(base.tlds)) {
-    book.tlds[k] = { ...base.tlds[k] };
+// book_over is a child book over a checked parent: its tables extend the
+// parent's, which it never writes (a fill copies its law, and book_valid
+// reveals only the child's events); each template's instance table is
+// copied, so numbering continues; the order starts as the parent's.
+export function book_over(base: Bend.Book): Bend.Book {
+  const tmps: Bend.Book["tmps"] = Object.create(null);
+  for (const k in base.tmps) {
+    tmps[k] = new Map(base.tmps[k]);
   }
-  Object.assign(book.ctrs, base.ctrs);
-  for (const k of Object.keys(base.tmps)) {
-    book.tmps[k] = new Map(base.tmps[k]);
-  }
-  book.order.push(...base.order);
-  return book;
+  return { tlds: Object.create(base.tlds), ctrs: Object.create(base.ctrs),
+    order: [...base.order], hols: 0, tmps };
+}
+
+// book_flat is the book with its tables flattened, the parent's names first
+// (a cold book's order): the compiler reads tables as own properties.
+export function book_flat(book: Bend.Book): Bend.Book {
+  const flat = <T>(t: Record<string, T>): Record<string, T> => {
+    const up = Object.getPrototypeOf(t);
+    return Object.assign(up === null ? Object.create(null) : flat(up), t);
+  };
+  return { ...book, tlds: flat(book.tlds), ctrs: flat(book.ctrs) };
 }
 
 function book_main(book: Bend.Book): Bend.Def | null {
@@ -1104,6 +1118,9 @@ function book_main(book: Bend.Book): Bend.Def | null {
 }
 
 function book_run(book: Bend.Book, argv: string[]): number {
+  if (Object.getPrototypeOf(book.tlds) !== null) {
+    book = book_flat(book);
+  }
   const main = book_main(book);
   if (main === null) {
     return cli_verdict(book, false);
