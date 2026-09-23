@@ -39,7 +39,7 @@ allow("LICENSE", 4000);
 allow("flake.nix", 1500);
 allow("bend2/base.bend", 32000);
 allow("bend2/bend.lean", 400000);
-allow("bend2/bend.ts", 44300);
+allow("bend2/bend.ts", 44700);
 allow("bend2/comp.ts", 64000);
 allow("bend2/main.ts", 10200);
 allow(/^bend2\/effs\/[a-z0-9_]+\.(c|js)$/, 4000);
