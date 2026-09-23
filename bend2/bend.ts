@@ -954,7 +954,10 @@ async function book_file(book: Book, file: string, spn?: Span): Promise<string> 
   return fs.realpathSync(file);
 }
 
-export async function book_load(book: Book, file: string, ns: string, seen: Map<string, string | null>, spn?: Span, root?: string): Promise<number> {
+// book_load loads a file after its imports; on sees each new file in that order
+// (realpath, namespace, text) before its parse, and skips the parse by answering true.
+export async function book_load(book: Book, file: string, ns: string, seen: Map<string, string | null>, spn?: Span, root?: string,
+  on?: (real: string, ns: string, text: string) => boolean | void): Promise<number> {
   const real = await book_file(book, file, spn);
   if (seen.has(real)) {
     if (seen.get(real) === null) {
@@ -988,7 +991,7 @@ export async function book_load(book: Book, file: string, ns: string, seen: Map<
     }
     body[i] = "";
     if (m[2] === undefined) {
-      await book_load(book, BASE_BEND, "", seen, sp);
+      await book_load(book, BASE_BEND, "", seen, sp, undefined, on);
       continue;
     }
     if (!m[1].endsWith(".bend")) {
@@ -1012,10 +1015,12 @@ export async function book_load(book: Book, file: string, ns: string, seen: Map<
       throw bad();
     }
     al[m[2]] = sub;
-    await book_load(book, got, sub, seen, sp, top);
+    await book_load(book, got, sub, seen, sp, top, on);
   }
   const n0 = book.order.length;
-  parse_book(book, dir, body.join("\n"), ns, al);
+  if (on?.(real, ns, text) !== true) {
+    parse_book(book, dir, body.join("\n"), ns, al);
+  }
   if (real === BASE_BEND) {
     for (const k of book.order.slice(n0)) {
       book.tlds[k].b = true;
