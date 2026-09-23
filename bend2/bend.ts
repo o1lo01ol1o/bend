@@ -3917,6 +3917,9 @@ export function book_valid(book: Book, done: number = 0): void {
   for (const k of Object.keys(tlds)) {
     const t = tlds[k];
     book.tlds[k] = last.has(k) && t.$ === "Def" ? { ...t, v: null } : t;
+    for (const c of t.$ === "ADT" ? t.c : []) {
+      book.ctrs[c.k] = c;
+    }
   }
   for (let i = done; i < book.order.length; i++) {
     const k   = book.order[i];
