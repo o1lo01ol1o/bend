@@ -787,7 +787,7 @@ export async function book_read(file: string,
   const laws = path.join(path.dirname(file), "LAWS.bend");
   if (path.basename(file) === "PROOF.bend" && fs.existsSync(laws)
     && !seen.has(fs.realpathSync(laws))) {
-    cli_fail("PROOF.bend must import ./LAWS.bend");
+    throw "bend: PROOF.bend must import ./LAWS.bend (see bend --help)";
   }
   Bend.book_valid(book, done);
   const hols = book.hols + book.open;
