@@ -601,7 +601,7 @@ const SPINES: Map<HTerm, Spine> = new Map();
 
 const NODES: Map<Bend.Name, Lay> = new Map();
 
-const LAYS: Map<string, Lay> = new Map();
+const LAYS: Map<number, Lay> = new Map();
 
 const CYCLES: Map<Bend.Name, boolean> = new Map();
 
@@ -960,7 +960,7 @@ function lay_of(book: Bend.Book, A: HTerm | null): Lay {
   if (t === null) {
     return BOX;
   }
-  const key = Bend.term_key(Bend.term_lower(t));
+  const key = Bend.term_id(t);
   return WORDS[t.k] ?? memo(LAYS, key, () => {
     const tld = book.tlds[t.k];
     if (t.k === "Array" || t.k === "IO.OP" || tld?.$ !== "ADT"
@@ -1262,7 +1262,7 @@ function show_main(book: Bend.Book): Show | null {
   const node = (T: HTerm, lay: Lay): number => {
     const t = ty_wnf(book, T) as HTerm;
     const box = lay_box(lay);
-    const key = String(box) + Bend.term_key(Bend.term_lower(t));
+    const key = box + " " + Bend.term_id(t);
     const got = ids.get(key);
     if (got !== undefined) {
       return got;
@@ -1490,14 +1490,16 @@ function carb_book(src: Bend.Book, roots: Bend.Name[]): Carb {
   return cb;
 }
 
-// The datatypes a type mentions
-function type_adts(cb: Carb, T: HTerm): Bend.Name[] {
-  const t = ty_wnf(cb.book, T);
+// The datatypes a type mentions, each shared node once
+function type_adts(cb: Carb, T: HTerm, seen = new Set<HTerm>()): Bend.Name[] {
+  const u = Bend.term_force(T);
+  const t = seen.has(u) ? null : ty_wnf(cb.book, T);
+  seen.add(u);
   switch (t?.$) {
-    case "All": return [...type_adts(cb, t.A), ...type_adts(cb, t.B(DUMMY))];
-    case "Lam": return type_adts(cb, t.f(DUMMY));
+    case "All": return [...type_adts(cb, t.A, seen), ...type_adts(cb, t.B(DUMMY), seen)];
+    case "Lam": return type_adts(cb, t.f(DUMMY), seen);
     case "ADT": return [...WORDS[t.k] === undefined && t.k !== "Array"
-      ? [t.k] : [], ...t.x.flatMap((x) => type_adts(cb, x))];
+      ? [t.k] : [], ...t.x.flatMap((x) => type_adts(cb, x, seen))];
     default: return [];
   }
 }
@@ -1697,17 +1699,24 @@ function node_fields(fl: File, t: string, node: Lay,
 // type (hot); a shared value of an erased parameter's type marks it
 // (poly). compile_book emits the book until a pass changes nothing.
 
+// A shared node revisited with its flags and the facts unchanged adds
+// nothing: it is skipped, so a type's lets are walked once, not per path.
 function facts_hot(fl: File, B: HTerm | null, force: boolean,
-  local = false): void {
+  local = false, seen = new Map<unknown, string>()): void {
+  const u = B && Bend.term_force(B), at = [force, local, fl.hot.size] + "";
+  if (seen.get(u) === at) {
+    return;
+  }
+  seen.set(u, at);
   const w = ty_wnf(fl.book, B);
   if (w?.$ === "Lam") {
-    return facts_hot(fl, w.f(DUMMY), force, local);
+    return facts_hot(fl, w.f(DUMMY), force, local, seen);
   }
   if (w?.$ === "App" && force && facts_fam(fl, w, local)) {
     return;
   }
   if (w?.$ === "Mat" && force) {
-    return term_kids(fl, w).forEach((h) => facts_hot(fl, h, true, local));
+    return term_kids(fl, w).forEach((h) => facts_hot(fl, h, true, local, seen));
   }
   if (w?.$ !== "ADT") {
     const dom = w?.$ === "Var" && !local && tele_unbind(fl.book,
@@ -1721,7 +1730,7 @@ function facts_hot(fl: File, B: HTerm | null, force: boolean,
   }
   const tk = "t:" + w.k;
   const hot = force || fl.hot.has(tk);
-  w.x.forEach((x) => facts_hot(fl, x, hot, local));
+  w.x.forEach((x) => facts_hot(fl, x, hot, local, seen));
   if (!hot || fl.hot.has(tk)) {
     return;
   }
