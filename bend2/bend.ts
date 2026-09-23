@@ -2607,7 +2607,7 @@ export function parse_def(p: Parse, book: Book, u: Bool = false): void {
     if (tele.length < law.x) {
       parse_fail(p, "a name for each ~ clause of the law (" + String(law.x) + ")");
     }
-    def = book.tlds[k] = law;
+    def = book.tlds[k] = { ...law };
     def.n = tele.length;
   } else {
     if (!parse_take(p, "->")) {
@@ -3877,8 +3877,8 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 
 // Valid
 // =====
-// book_valid throws the first Err (its first done entries are taken
-// as validated: a harness resumes past a seeded base); an order entry
+// book_valid throws the first Err (from the done-th entry on: a book
+// whose tables extend a checked parent's resumes past it); an order entry
 // is an event. every def declares (bodiless) up front and defines at
 // its event (a law: type checked at its law, defined at its fill), so
 // it is visible and stuck before, and unfolds after; an ADT declares
@@ -3905,62 +3905,56 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 export function book_valid(book: Book, done: number = 0): void {
   const tlds = book.tlds;
   const last = new Map<Name, number>();
-  for (let i = 0; i < book.order.length; i++) {
+  for (let i = done; i < book.order.length; i++) {
     last.set(book.order[i], i);
   }
-  book.tlds = Object.create(null);
-  for (const k in tlds) {
+  book.tlds = Object.create(Object.getPrototypeOf(tlds));
+  for (const k of Object.keys(tlds)) {
     const t = tlds[k];
     book.tlds[k] = last.has(k) && t.$ === "Def" ? { ...t, v: null } : t;
   }
-  for (let i = 0; i < book.order.length; i++) {
+  for (let i = done; i < book.order.length; i++) {
     const k   = book.order[i];
     const tld = tlds[k];
     const fin = last.get(k) === i;
     if (tld.$ === "ADT") {
-      if (i >= done) {
-        term_check(book, { t: Ref(k), n: 0, def: k, qs: [] }, tld.T, None(), Typ(Qua(Lone())), ctx_nil(), 0);
-        const { doms, ret: kind } = tele_unbind(book, tld.T);
-        if (kind.$ !== "Typ") {
-          let ctx = ctx_nil();
-          for (const [d, [q, x, A]] of doms.entries()) {
-            ctx = ctx_bind(ctx, d, q, x, A);
-          }
-          throw Err(book, ctx, "a kind (type " + k + "<..> is Kind(g))", kind, kind.s ?? tld.T.s, k);
+      term_check(book, { t: Ref(k), n: 0, def: k, qs: [] }, tld.T, None(), Typ(Qua(Lone())), ctx_nil(), 0);
+      const { doms, ret: kind } = tele_unbind(book, tld.T);
+      if (kind.$ !== "Typ") {
+        let ctx = ctx_nil();
+        for (const [d, [q, x, A]] of doms.entries()) {
+          ctx = ctx_bind(ctx, d, q, x, A);
         }
-        for (const ctr of tld.c) {
-          let tel: HTerm = ctr.T;
-          let ctx = ctx_nil();
-          for (let d = 0; d < tld.n + ctr.n; d++) {
-            const t_all = tele_head(book, tel, ctx, ctr.k);
-            let goal: HTerm = Typ(Qua(t_all.q));
-            if (d >= tld.n && t_all.q.$ === "Lone") {
-              goal = kind;
-            }
-            term_check(book, { t: Ref(ctr.k), n: 0, def: ctr.k, qs: [] }, t_all.A, None(), goal, ctx, d);
-            ctx = ctx_bind(ctx, d, t_all.q, t_all.k, t_all.A);
-            tel = t_all.B(Var(t_all.k, d));
+        throw Err(book, ctx, "a kind (type " + k + "<..> is Kind(g))", kind, kind.s ?? tld.T.s, k);
+      }
+      for (const ctr of tld.c) {
+        let tel: HTerm = ctr.T;
+        let ctx = ctx_nil();
+        for (let d = 0; d < tld.n + ctr.n; d++) {
+          const t_all = tele_head(book, tel, ctx, ctr.k);
+          let goal: HTerm = Typ(Qua(t_all.q));
+          if (d >= tld.n && t_all.q.$ === "Lone") {
+            goal = kind;
           }
-          const exp = "a telescope tipped at " + k + " applied to its own parameters";
-          const tip = term_wnf(book, tel);
-          if (tip.$ !== "ADT" || tip.k !== k || tip.x.length !== tld.n || tip.r.length !== 0) {
+          term_check(book, { t: Ref(ctr.k), n: 0, def: ctr.k, qs: [] }, t_all.A, None(), goal, ctx, d);
+          ctx = ctx_bind(ctx, d, t_all.q, t_all.k, t_all.A);
+          tel = t_all.B(Var(t_all.k, d));
+        }
+        const exp = "a telescope tipped at " + k + " applied to its own parameters";
+        const tip = term_wnf(book, tel);
+        if (tip.$ !== "ADT" || tip.k !== k || tip.x.length !== tld.n || tip.r.length !== 0) {
+          throw Err(book, ctx, exp, tip, undefined, ctr.k);
+        }
+        for (let d = 0; d < tld.n; d++) {
+          const x = term_wnf(book, tip.x[d]);
+          if (x.$ !== "Var" || x.i !== d) {
             throw Err(book, ctx, exp, tip, undefined, ctr.k);
-          }
-          for (let d = 0; d < tld.n; d++) {
-            const x = term_wnf(book, tip.x[d]);
-            if (x.$ !== "Var" || x.i !== d) {
-              throw Err(book, ctx, exp, tip, undefined, ctr.k);
-            }
           }
         }
       }
       continue;
     }
     const def: Def = fin ? tld : { ...tld, v: null };
-    if (i < done) {
-      book.tlds[k] = def;
-      continue;
-    }
     if (fin && tld.v === null && tld.b !== true && !tld.i) {
       book.open += 1;
     }
