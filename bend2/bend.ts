@@ -3883,7 +3883,8 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 // Valid
 // =====
 // book_valid throws the first Err (from the done-th entry on: a book
-// whose tables extend a checked parent's resumes past it); an order entry
+// whose tables extend a checked parent's resumes past it, recounting
+// the open laws its entries touch); an order entry
 // is an event. every def declares (bodiless) up front and defines at
 // its event (a law: type checked at its law, defined at its fill), so
 // it is visible and stuck before, and unfolds after; an ADT declares
@@ -3909,16 +3910,21 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 
 export function book_valid(book: Book, done: number = 0): void {
   const tlds = book.tlds;
+  const up = Object.getPrototypeOf(tlds);
+  const open = (t?: TLD) => t?.$ === "Def" && t.v === null && t.b !== true && !t.i;
   const last = new Map<Name, number>();
   for (let i = done; i < book.order.length; i++) {
     last.set(book.order[i], i);
   }
-  book.tlds = Object.create(Object.getPrototypeOf(tlds));
+  book.tlds = Object.create(up);
   for (const k of Object.keys(tlds)) {
     const t = tlds[k];
     book.tlds[k] = last.has(k) && t.$ === "Def" ? { ...t, v: null } : t;
     for (const c of t.$ === "ADT" ? t.c : []) {
       book.ctrs[c.k] = c;
+    }
+    if (last.has(k) && open(up?.[k])) {
+      book.open -= 1;
     }
   }
   for (let i = done; i < book.order.length; i++) {
@@ -3963,7 +3969,7 @@ export function book_valid(book: Book, done: number = 0): void {
       continue;
     }
     const def: Def = fin ? tld : { ...tld, v: null };
-    if (fin && tld.v === null && tld.b !== true && !tld.i) {
+    if (fin && open(tld)) {
       book.open += 1;
     }
     term_check(book, { t: Ref(k), n: 0, def: k, qs: [], u: def.u }, def.T, None(), Typ(Qua(Lone())), ctx_nil(), 0);
