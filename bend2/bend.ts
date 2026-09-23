@@ -316,7 +316,7 @@ export type Ctrs = Array<Ctr>;
 export type ADT  = { $: "ADT"; n: number; g: number; T: HTerm; c: Ctrs; b?: Bool; };
 export type Def  = { $: "Def"; n: number; x: number; T: HTerm; v: HTerm | null; e?: LTerm; b?: Bool; u?: Bool; i?: string[]; m?: string; l?: Bool; };
 export type TLD  = ADT | Def;
-export type Book = { tlds: Record<Name, TLD>; ctrs: Record<Name, Ctr>; order: Name[]; hols: number; tmps: Record<Name, Map<string, Name>>; };
+export type Book = { tlds: Record<Name, TLD>; ctrs: Record<Name, Ctr>; order: Name[]; hols: number; tmps: Record<Name, Map<string, Name>>; redo?: true; };
 
 // Context
 export type Ann = { q: Quant; k: Name; T: HTerm };
@@ -3817,6 +3817,14 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
     book.tlds[o] = { ...inst, v: null };
     inst.e = def_check(book, o, inst, z);
     book.tlds[o] = inst;
+  } else if (book.redo === true && book.tlds[o].$ === "Def"
+    && (book.tlds[o] as Def).v !== null && (book.tlds[o] as Def).e === undefined) {
+    // a replay meets a stored instance without its elaboration: the first
+    // call re-elaborates it at the call's view, as its minting call did
+    const inst: Def = { ...(book.tlds[o] as Def) };
+    book.tlds[o] = { ...inst, v: null };
+    inst.e = def_check(book, o, inst, (lhs.z ?? 0) + 1);
+    book.tlds[o] = inst;
   } else if (book.tlds[o].v === null && o !== lhs.def) {
     throw Err(book, ctx, "a decreasing self-call (arguments are read left to right: each passed unchanged until one shrinks)", tm, tm.s, lhs.def);
   }
@@ -3850,8 +3858,26 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 // closed ~ arguments, is minted and checked by its first live call
 // (infer-ref) while the caller is declared; it stays outside the order
 // (a seeded book keeps it), so it is no claim.
+// with only, book_valid replays a checked book whose stored records lack
+// their elaborations: an event outside only is revealed unchecked, an event
+// in only checks as before (so its elaboration is the one its event made),
+// and an instance met without its elaboration is re-elaborated by its first
+// call; only must hold every def that calls such an instance.
 
-export function book_valid(book: Book, done: number = 0): void {
+export function book_valid(book: Book, done: number = 0, only?: Set<Name>): void {
+  if (only !== undefined) {
+    book.redo = true;
+    try {
+      book_check_events(book, done, only);
+    } finally {
+      delete book.redo;
+    }
+    return;
+  }
+  book_check_events(book, done);
+}
+
+function book_check_events(book: Book, done: number, only?: Set<Name>): void {
   const tlds = book.tlds;
   const up = Object.getPrototypeOf(tlds);
   const open = (t?: TLD) => t?.$ === "Def" && t.v === null && t.b !== true && !t.i;
@@ -3874,6 +3900,12 @@ export function book_valid(book: Book, done: number = 0): void {
     const k   = book.order[i];
     const tld = tlds[k];
     const fin = last.get(k) === i;
+    if (only !== undefined && !only.has(k)) {
+      if (fin) {
+        book.tlds[k] = tld;
+      }
+      continue;
+    }
     if (tld.$ === "ADT") {
       if (i >= done) {
         term_check(book, { t: Ref(k), n: 0, def: k, qs: [] }, tld.T, None(), Typ(Qua(Lone())), ctx_nil(), 0);
