@@ -316,7 +316,7 @@ export type Ctrs = Array<Ctr>;
 export type ADT  = { $: "ADT"; n: number; g: number; T: HTerm; c: Ctrs; b?: Bool; };
 export type Def  = { $: "Def"; n: number; x: number; T: HTerm; v: HTerm | null; e?: LTerm; b?: Bool; u?: Bool; i?: string[]; m?: string; };
 export type TLD  = ADT | Def;
-export type Book = { tlds: Record<Name, TLD>; ctrs: Record<Name, Ctr>; order: Name[]; hols: number; open: number; tmps: Record<Name, Record<string, Name>>; };
+export type Book = { tlds: Record<Name, TLD>; ctrs: Record<Name, Ctr>; order: Name[]; hols: number; open: number; tmps: Record<Name, Record<string, Name>>; redo?: true; };
 
 // Context
 export type Ann = { q: Quant; k: Name; T: HTerm };
@@ -818,8 +818,19 @@ export function term_higher(tm: LTerm, env: Env = null): HTerm {
   }
 }
 
-export function term_lower(term: HTerm, d: number = 0): LTerm {
+// term_lower is a term's first-order syntax at depth d; with low, a node
+// met again at a depth (a let's value at each use) lowers once, shared.
+export function term_lower(term: HTerm, d: number = 0, low?: Map<HTerm, LTerm[]>): LTerm {
   const tm = term_force(term);
+  if (low === undefined) {
+    return term_lower_at(tm, d);
+  }
+  const at = low.get(tm) ?? [];
+  low.set(tm, at);
+  return at[d] ??= term_lower_at(tm, d, low);
+}
+
+function term_lower_at(tm: HTerm, d: number, low?: Map<HTerm, LTerm[]>): LTerm {
   switch (tm.$) {
     case "Var": {
       return Var(tm.k, tm.i, tm.s);
@@ -828,63 +839,63 @@ export function term_lower(term: HTerm, d: number = 0): LTerm {
       return Ref(tm.k, tm.s, tm.b);
     }
     case "Sub": {
-      return Sub(tm.i, tm.v.$ === "PVar" || tm.v.$ === "PCtr" ? tm.v : term_lower(tm.v, d), term_lower(tm.f, d), tm.s);
+      return Sub(tm.i, tm.v.$ === "PVar" || tm.v.$ === "PCtr" ? tm.v : term_lower(tm.v, d, low), term_lower(tm.f, d, low), tm.s);
     }
     case "Let": {
       const xs = tm.k.map((k, j): HTerm => Var(k, d + j));
-      const vs = tm.v.map((v) => term_lower(v, d));
-      return Let(tm.k, xs.map((_, j) => d + j), vs, term_lower(tm.f(xs), d + tm.k.length), tm.s, tm.q);
+      const vs = tm.v.map((v) => term_lower(v, d, low));
+      return Let(tm.k, xs.map((_, j) => d + j), vs, term_lower(tm.f(xs), d + tm.k.length, low), tm.s, tm.q);
     }
     case "Typ": {
-      return Typ(term_lower(tm.g, d), tm.s);
+      return Typ(term_lower(tm.g, d, low), tm.s);
     }
     case "Qnt":
     case "Qua": {
       return tm;
     }
     case "Min": {
-      return Min(term_lower(tm.a, d), term_lower(tm.b, d), tm.s);
+      return Min(term_lower(tm.a, d, low), term_lower(tm.b, d, low), tm.s);
     }
     case "All": {
       const x: HTerm = Var(tm.k, d);
-      return All(tm.q, tm.k, d, term_lower(tm.A, d), term_lower(tm.B(x), d + 1), tm.s);
+      return All(tm.q, tm.k, d, term_lower(tm.A, d, low), term_lower(tm.B(x), d + 1, low), tm.s);
     }
     case "Lam": {
       const x: HTerm = Var(tm.k, d);
-      return Lam(tm.k, d, term_lower(tm.f(x), d + 1), tm.s, tm.q);
+      return Lam(tm.k, d, term_lower(tm.f(x), d + 1, low), tm.s, tm.q);
     }
     case "App": {
-      return App(term_lower(tm.f, d), term_lower(tm.x, d), tm.s);
+      return App(term_lower(tm.f, d, low), term_lower(tm.x, d, low), tm.s);
     }
     case "ADT": {
-      return ADT(tm.k, tm.x.map((x) => term_lower(x, d)), tm.s, tm.r);
+      return ADT(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s, tm.r);
     }
     case "Ctr": {
-      return Ctr(tm.k, tm.x.map((x) => term_lower(x, d)), tm.s);
+      return Ctr(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s);
     }
     case "Lit": {
       return tm;
     }
     case "Mat": {
-      return Mat(tm.k, term_lower(tm.h, d), term_lower(tm.m, d), tm.s);
+      return Mat(tm.k, term_lower(tm.h, d, low), term_lower(tm.m, d, low), tm.s);
     }
     case "Efq": {
       return Efq(tm.s);
     }
     case "Eql": {
-      return Eql(term_lower(tm.a, d), term_lower(tm.b, d), term_lower(tm.T, d), tm.s);
+      return Eql(term_lower(tm.a, d, low), term_lower(tm.b, d, low), term_lower(tm.T, d, low), tm.s);
     }
     case "Rfl": {
       return Rfl(tm.s);
     }
     case "Rwt": {
-      return Rwt(term_lower(tm.e, d), term_lower(tm.p, d), term_lower(tm.f, d), tm.s);
+      return Rwt(term_lower(tm.e, d, low), term_lower(tm.p, d, low), term_lower(tm.f, d, low), tm.s);
     }
     case "Hol": {
       return Hol(tm.k, tm.s);
     }
     case "Ann": {
-      return Ann(term_lower(tm.x, d), term_lower(tm.T, d), tm.s);
+      return Ann(term_lower(tm.x, d, low), term_lower(tm.T, d, low), tm.s);
     }
   }
 }
@@ -1067,7 +1078,10 @@ async function book_file(book: Book, file: string, spn?: Span): Promise<string> 
   return fs.realpathSync(file);
 }
 
-export async function book_load(book: Book, file: string, ns: string, seen: Map<string, string | null>, spn?: Span): Promise<number> {
+// book_load loads a file after its imports; on sees each new file in that order
+// (realpath, namespace, text) before its parse, and skips the parse by answering true.
+export async function book_load(book: Book, file: string, ns: string, seen: Map<string, string | null>, spn?: Span,
+  on?: (real: string, ns: string, text: string) => boolean | void): Promise<number> {
   const real = await book_file(book, file, spn);
   if (seen.has(real)) {
     if (seen.get(real) === null) {
@@ -1100,7 +1114,7 @@ export async function book_load(book: Book, file: string, ns: string, seen: Map<
     }
     body[i] = "";
     if (m[2] === undefined) {
-      await book_load(book, BASE_BEND, "", seen, sp);
+      await book_load(book, BASE_BEND, "", seen, sp, on);
       continue;
     }
     if (!m[1].endsWith(".bend")) {
@@ -1124,10 +1138,12 @@ export async function book_load(book: Book, file: string, ns: string, seen: Map<
       throw bad();
     }
     al[m[2]] = sub;
-    await book_load(book, got, sub, seen, sp);
+    await book_load(book, got, sub, seen, sp, on);
   }
   const n0 = book.order.length;
-  parse_book(book, dir, body.join("\n"), ns, al);
+  if (on?.(real, ns, text) !== true) {
+    parse_book(book, dir, body.join("\n"), ns, al);
+  }
   if (real === BASE_BEND) {
     for (const k of book.order.slice(n0)) {
       book.tlds[k].b = true;
@@ -1305,8 +1321,26 @@ const ESCAPES: Record<string, U32> = {
   "n": 10, "t": 9, "r": 13, "0": 0, "\\": 92, "'": 39, '"': 34,
 };
 
-export function term_key(tm: LTerm): string {
-  return JSON.stringify(tm, (k, v) => k === "s" ? undefined : v);
+export function term_key(tm: LTerm, id?: (t: LTerm) => number): string {
+  return JSON.stringify(tm, (k, v) => k === "s" ? undefined : id && v !== tm && v?.$ ? id(v) : v);
+}
+
+// term_id numbers term_key(term_lower(tm)) by its nodes' numbers: a value
+// its lets share keys once, not once per use.
+const IDS = new Map<string, number>();
+
+export function term_id(tm: HTerm): number {
+  const ids = new Map<LTerm, number>();
+  const id = (t: LTerm): number => {
+    let n = ids.get(t);
+    if (n === undefined) {
+      const k = term_key(t, id);
+      n = IDS.get(k) ?? IDS.set(k, IDS.size).size - 1;
+      ids.set(t, n);
+    }
+    return n;
+  };
+  return id(term_lower(tm, 0, new Map()));
 }
 
 export function term_show(term: LTerm, top: number = -1, bnd: Name[] = []): string {
@@ -2578,7 +2612,7 @@ export function parse_def(p: Parse, book: Book, u: Bool = false): void {
     if (tele.length < law.x) {
       parse_fail(p, "a name for each ~ clause of the law (" + String(law.x) + ")");
     }
-    def = book.tlds[k] = law;
+    def = book.tlds[k] = { ...law };
     def.n = tele.length;
   } else {
     if (!parse_take(p, "->")) {
@@ -3840,6 +3874,16 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
     book.tlds[o] = { ...inst, v: null };
     inst.e = def_check(book, o, inst, z);
     book.tlds[o] = inst;
+  } else if (book.redo === true && book.tlds[is[key]].$ === "Def"
+    && (book.tlds[is[key]] as Def).v !== null && (book.tlds[is[key]] as Def).e === undefined) {
+    // a replay (book_valid's only) meets a stored instance without its
+    // elaboration: the first call re-elaborates it, at the call's view, as
+    // the call that minted it did
+    const o = is[key];
+    const inst: Def = { ...(book.tlds[o] as Def) };
+    book.tlds[o] = { ...inst, v: null };
+    inst.e = def_check(book, o, inst, (lhs.z ?? 0) + 1);
+    book.tlds[o] = inst;
   } else if (book.tlds[is[key]].v === null && is[key] !== lhs.def) {
     throw Err(book, ctx, "a decreasing self-call (arguments are read left to right: each passed unchanged until one shrinks)", tm, tm.s, lhs.def);
   }
@@ -3848,8 +3892,9 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 
 // Valid
 // =====
-// book_valid throws the first Err (its first done entries are taken
-// as validated: a harness resumes past a seeded base); an order entry
+// book_valid throws the first Err (from the done-th entry on: a book
+// whose tables extend a checked parent's resumes past it, recounting
+// the open laws its entries touch); an order entry
 // is an event. every def declares (bodiless) up front and defines at
 // its event (a law: type checked at its law, defined at its fill), so
 // it is visible and stuck before, and unfolds after; an ADT declares
@@ -3872,67 +3917,93 @@ export function def_inst(book: Book, lhs: LHS, tm: Extract<HTerm, { $: "Ref" }>,
 // closed ~ arguments, is minted and checked by its first live call
 // (infer-ref) while the caller is declared; it stays outside the order
 // (a seeded book keeps it), so it is no claim.
+// with only, book_valid replays a checked book whose stored records lack
+// their elaborations: an event outside only is revealed unchecked, an event
+// in only checks as before (so its elaboration is the one its event made),
+// and an instance met without its elaboration is re-elaborated by its first
+// call; only must hold every def that calls such an instance.
 
-export function book_valid(book: Book, done: number = 0): void {
+export function book_valid(book: Book, done: number = 0, only?: Set<Name>): void {
+  if (only !== undefined) {
+    book.redo = true;
+    try {
+      book_check_events(book, done, only);
+    } finally {
+      delete book.redo;
+    }
+    return;
+  }
+  book_check_events(book, done);
+}
+
+function book_check_events(book: Book, done: number, only?: Set<Name>): void {
   const tlds = book.tlds;
+  const up = Object.getPrototypeOf(tlds);
+  const open = (t?: TLD) => t?.$ === "Def" && t.v === null && t.b !== true && !t.i;
   const last = new Map<Name, number>();
-  for (let i = 0; i < book.order.length; i++) {
+  for (let i = done; i < book.order.length; i++) {
     last.set(book.order[i], i);
   }
-  book.tlds = Object.create(null);
-  for (const k in tlds) {
+  book.tlds = Object.create(up);
+  for (const k of Object.keys(tlds)) {
     const t = tlds[k];
     book.tlds[k] = last.has(k) && t.$ === "Def" ? { ...t, v: null } : t;
+    for (const c of t.$ === "ADT" ? t.c : []) {
+      book.ctrs[c.k] = c;
+    }
+    if (last.has(k) && open(up?.[k])) {
+      book.open -= 1;
+    }
   }
-  for (let i = 0; i < book.order.length; i++) {
+  for (let i = done; i < book.order.length; i++) {
     const k   = book.order[i];
     const tld = tlds[k];
     const fin = last.get(k) === i;
+    if (only !== undefined && !only.has(k)) {
+      if (fin) {
+        book.tlds[k] = tld;
+      }
+      continue;
+    }
     if (tld.$ === "ADT") {
-      if (i >= done) {
-        term_check(book, { t: Ref(k), n: 0, def: k, qs: [] }, tld.T, None(), Typ(Qua(Lone())), ctx_nil(), 0);
-        const { doms, ret: kind } = tele_unbind(book, tld.T);
-        if (kind.$ !== "Typ") {
-          let ctx = ctx_nil();
-          for (const [d, [q, x, A]] of doms.entries()) {
-            ctx = ctx_bind(ctx, d, q, x, A);
-          }
-          throw Err(book, ctx, "a kind (type " + k + "<..> is Kind(g))", kind, kind.s ?? tld.T.s, k);
+      term_check(book, { t: Ref(k), n: 0, def: k, qs: [] }, tld.T, None(), Typ(Qua(Lone())), ctx_nil(), 0);
+      const { doms, ret: kind } = tele_unbind(book, tld.T);
+      if (kind.$ !== "Typ") {
+        let ctx = ctx_nil();
+        for (const [d, [q, x, A]] of doms.entries()) {
+          ctx = ctx_bind(ctx, d, q, x, A);
         }
-        for (const ctr of tld.c) {
-          let tel: HTerm = ctr.T;
-          let ctx = ctx_nil();
-          for (let d = 0; d < tld.n + ctr.n; d++) {
-            const t_all = tele_head(book, tel, ctx, ctr.k);
-            let goal: HTerm = Typ(Qua(t_all.q));
-            if (d >= tld.n && t_all.q.$ === "Lone") {
-              goal = kind;
-            }
-            term_check(book, { t: Ref(ctr.k), n: 0, def: ctr.k, qs: [] }, t_all.A, None(), goal, ctx, d);
-            ctx = ctx_bind(ctx, d, t_all.q, t_all.k, t_all.A);
-            tel = t_all.B(Var(t_all.k, d));
+        throw Err(book, ctx, "a kind (type " + k + "<..> is Kind(g))", kind, kind.s ?? tld.T.s, k);
+      }
+      for (const ctr of tld.c) {
+        let tel: HTerm = ctr.T;
+        let ctx = ctx_nil();
+        for (let d = 0; d < tld.n + ctr.n; d++) {
+          const t_all = tele_head(book, tel, ctx, ctr.k);
+          let goal: HTerm = Typ(Qua(t_all.q));
+          if (d >= tld.n && t_all.q.$ === "Lone") {
+            goal = kind;
           }
-          const exp = "a telescope tipped at " + k + " applied to its own parameters";
-          const tip = term_wnf(book, tel);
-          if (tip.$ !== "ADT" || tip.k !== k || tip.x.length !== tld.n || tip.r.length !== 0) {
+          term_check(book, { t: Ref(ctr.k), n: 0, def: ctr.k, qs: [] }, t_all.A, None(), goal, ctx, d);
+          ctx = ctx_bind(ctx, d, t_all.q, t_all.k, t_all.A);
+          tel = t_all.B(Var(t_all.k, d));
+        }
+        const exp = "a telescope tipped at " + k + " applied to its own parameters";
+        const tip = term_wnf(book, tel);
+        if (tip.$ !== "ADT" || tip.k !== k || tip.x.length !== tld.n || tip.r.length !== 0) {
+          throw Err(book, ctx, exp, tip, undefined, ctr.k);
+        }
+        for (let d = 0; d < tld.n; d++) {
+          const x = term_wnf(book, tip.x[d]);
+          if (x.$ !== "Var" || x.i !== d) {
             throw Err(book, ctx, exp, tip, undefined, ctr.k);
-          }
-          for (let d = 0; d < tld.n; d++) {
-            const x = term_wnf(book, tip.x[d]);
-            if (x.$ !== "Var" || x.i !== d) {
-              throw Err(book, ctx, exp, tip, undefined, ctr.k);
-            }
           }
         }
       }
       continue;
     }
     const def: Def = fin ? tld : { ...tld, v: null };
-    if (i < done) {
-      book.tlds[k] = def;
-      continue;
-    }
-    if (fin && tld.v === null && tld.b !== true && !tld.i) {
+    if (fin && open(tld)) {
       book.open += 1;
     }
     term_check(book, { t: Ref(k), n: 0, def: k, qs: [], u: def.u }, def.T, None(), Typ(Qua(Lone())), ctx_nil(), 0);

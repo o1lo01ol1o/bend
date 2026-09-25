@@ -275,10 +275,10 @@ async function cli_file(args: string[]): Promise<void> {
       return await cli_checkup(file);
     }
     if (only) {
-      return cli_report(...await book_read(file), 1);
+      const { book, n0 } = await book_read(file);
+      return cli_report(book, n0, 1);
     }
-    const seen = new Map<string, string | null>();
-    const [book, n0] = await book_read(file, undefined, seen);
+    const { book, n0, seen } = await book_read(file);
     if (outs.length !== 0 || book_main(book) !== null) {
       cli_report(book, n0, 2);
     }
@@ -302,9 +302,10 @@ async function cli_file(args: string[]): Promise<void> {
 }
 
 // cli_checkup checks and runs each import of the file alone (Base read
-// once, seeded into every module that imports it); one that fails fails it.
+// once, the parent of every module whose first import it is, so each check
+// is its module's cold check); one that fails fails it.
 async function cli_checkup(file: string): Promise<void> {
-  const [base] = await book_read(BASE);
+  const base = await book_read(BASE);
   let bad = false;
   for (const raw of fs.readFileSync(file, "utf8").split("\n")) {
     const m = /^import\s+(\S+)\s+as\s+[A-Za-z_][A-Za-z0-9_]*\s*$/
@@ -317,8 +318,10 @@ async function cli_checkup(file: string): Promise<void> {
     cli_say(1, "--- " + m[1] + " ---\n");
     let code = 1;
     try {
-      const own = /^import Base$/m.test(fs.readFileSync(at, "utf8"));
-      code = book_run(...await book_read(at, own ? base : undefined), []);
+      const head = /^\s*import(\s.*)?$/m.exec(fs.readFileSync(at, "utf8"));
+      const own = /^\s*import\s+Base\s*(#.*)?$/.test(head?.[0] ?? "");
+      const { book, n0 } = await book_read(at, own ? base : undefined);
+      code = book_run(book, n0, []);
     } catch (e) {
       cli_say(2, book_err(e) + "\n");
     }
@@ -467,8 +470,7 @@ async function cli_bundle(page: string, dir: string): Promise<void> {
 // left) to the hub with its proof of work, and prints the import line.
 // First it prints the terms and the license the hub will show.
 async function cli_publish(file: string, named?: string): Promise<void> {
-  const seen = new Map<string, string | null>();
-  const [book, n0] = await book_read(file, undefined, seen);
+  const { book, n0, seen } = await book_read(file);
   cli_report(book, n0, 2);
   const files = pkg_files(file, book, seen);
   const entry = Object.keys(files)[0];
@@ -727,16 +729,19 @@ function cli_report(book: Bend.Book, n0: number, fd: number): void {
   }
 }
 
-// term_refs adds to out the names a term (a span skipped) refers to.
-function term_refs(tm: unknown, out: Set<string>): void {
-  if (typeof tm === "object" && tm !== null) {
+// term_refs adds to out the names a term (a span skipped) refers to. It
+// visits each node once: a let's value is shared by every use of its
+// variable, and a walk of the unshared tree is exponential in the lets.
+function term_refs(tm: unknown, out: Set<string>, seen = new Set<object>()): void {
+  if (typeof tm === "object" && tm !== null && !seen.has(tm)) {
+    seen.add(tm);
     const { $, k } = tm as { $?: string; k?: string };
     if (($ === "Ref" || $ === "ADT") && k !== undefined) {
       out.add(k);
     }
     for (const [f, v] of Object.entries(tm)) {
       if (f !== "s") {
-        term_refs(v, out);
+        term_refs(v, out, seen);
       }
     }
   }
@@ -761,38 +766,62 @@ function cli_fail(msg: string): never {
 // Book
 // ====
 
-async function book_read(file: string, base?: Bend.Book,
-  seen = new Map<string, string | null>()): Promise<[Bend.Book, number]> {
-  const book = base === undefined ? Bend.book_nil() : book_seed(base);
-  if (base !== undefined) {
-    seen.set(BASE, "");
-  }
-  const n0 = await Bend.book_load(book, file, "", seen);
+export type BookState = {
+  book: Bend.Book;
+  seen: Map<string, string | null>;
+};
+
+// book_read loads and checks a file; on sees the loader's steps (book_load).
+// unsafe_seed must be a complete checked prefix of the file's own load
+// order, with its matching loader map: its sources, namespaces and checker
+// version are trusted, not verified here. The seed is never written: the
+// file checks in a book_over child, returned flat (its tables own every
+// name, as a caller that enumerates them expects); its term graphs stay
+// shared, so a later compile may force its elaborations' cells. n0 marks
+// the file's own claims.
+export async function book_read(file: string, unsafe_seed?: BookState,
+  on?: Parameters<typeof Bend.book_load>[5]): Promise<BookState & { n0: number }> {
+  const book = unsafe_seed === undefined
+    ? Bend.book_nil() : book_over(unsafe_seed.book);
+  const seen = new Map(unsafe_seed?.seen);
+  const done = book.order.length;
+  const n0 = await Bend.book_load(book, file, "", seen, undefined, on);
   const laws = path.join(path.dirname(file), "LAWS.bend");
   if (path.basename(file) === "PROOF.bend" && fs.existsSync(laws)
     && !seen.has(fs.realpathSync(laws))) {
-    cli_fail("PROOF.bend must import ./LAWS.bend");
+    throw "bend: PROOF.bend must import ./LAWS.bend (see bend --help)";
   }
-  Bend.book_valid(book, base?.order.length ?? 0);
+  Bend.book_valid(book, done);
   const hols = book.hols + book.open;
   if (hols > 0) {
     throw "Error: " + String(hols) + " TODO" + (hols === 1 ? "" : "s")
       + " found.\nThe code is incomplete, and not a valid proof yet.";
   }
-  return [book, n0];
+  return { book: unsafe_seed === undefined ? book : book_flat(book), seen, n0 };
 }
 
-function book_seed(base: Bend.Book): Bend.Book {
-  const book = Bend.book_nil();
-  for (const k of Object.keys(base.tlds)) {
-    book.tlds[k] = { ...base.tlds[k] };
+// book_over is a child book over a checked parent: its tables extend the
+// parent's, which it never writes (a fill copies its law, and book_valid
+// reveals only the child's events); each template's instance table is
+// copied, so numbering continues; the order and the counts of holes and
+// open laws start as the parent's.
+export function book_over(base: Bend.Book): Bend.Book {
+  const tmps: Bend.Book["tmps"] = Object.create(null);
+  for (const k in base.tmps) {
+    tmps[k] = Object.assign(Object.create(null), base.tmps[k]);
   }
-  Object.assign(book.ctrs, base.ctrs);
-  for (const k of Object.keys(base.tmps)) {
-    book.tmps[k] = { ...base.tmps[k] };
-  }
-  book.order.push(...base.order);
-  return book;
+  return { tlds: Object.create(base.tlds), ctrs: Object.create(base.ctrs),
+    order: [...base.order], hols: base.hols, open: base.open, tmps };
+}
+
+// book_flat is the book with its tables flattened, the parent's names first
+// (a cold book's order): the compiler reads tables as own properties.
+export function book_flat(book: Bend.Book): Bend.Book {
+  const flat = <T>(t: Record<string, T>): Record<string, T> => {
+    const up = Object.getPrototypeOf(t);
+    return Object.assign(up === null ? Object.create(null) : flat(up), t);
+  };
+  return { ...book, tlds: flat(book.tlds), ctrs: flat(book.ctrs) };
 }
 
 function book_main(book: Bend.Book): Bend.Def | null {
@@ -829,7 +858,7 @@ function book_err(e: unknown): string {
 
 async function load_js(path: string): Promise<string> {
   try {
-    const [book, n0] = await book_read(path);
+    const { book, n0 } = await book_read(path);
     cli_report(book, n0, 2);
     const outs = [...new Set(book.order)].filter((k) => {
       const tld = book.tlds[k];
