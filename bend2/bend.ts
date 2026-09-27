@@ -3230,20 +3230,52 @@ export function term_snf(book: Book, term: HTerm): HTerm {
 
 // Compare
 // =======
-// term_compare(mode, a, b): a fits b. the relation is a preorder, not an
-// equality: mode LE is conversion (check-any's goal meet), directional
-// only at kinds (the quantity order) and ADT residuals (removing more
-// constructors fits removing fewer); a function type compares its
-// domains SWAPPED (the slot's owner picks the argument, so the wanted
-// domain must fit the given one) and its codomain along; every part
-// that flows both ways -- an argument, a parameter, a field, an
-// equation endpoint -- compares EQ, and EQ stays EQ all the way down,
-// so no position is ever visited twice. mode EQ is the symmetric core:
-// same walk, kinds exact, no swap (a swap under EQ is harmless, so
-// the All case swaps unconditionally).
+// Positive alpha-congruence before delta reduction. A failed bounded probe
+// says nothing; conversion below remains the fallback. No cross-view cache.
+function term_same(lhs: HTerm, rhs: HTerm, dep: number): boolean {
+  const todo: [HTerm, HTerm, number][] = [[lhs, rhs, dep]];
+  let fuel = 8192;
+  while (todo.length) {
+    if (fuel-- <= 0) return false;
+    const [a0, b0, d] = todo.pop()!;
+    const a = term_strip(a0), b = term_strip(b0);
+    if (a === b) continue;
+    if (a.$ === "Ref" && b.$ === "Ref" && a.k === b.k) continue;
+    if (a.$ === "Var" && b.$ === "Var" && a.i >= 0 && a.i === b.i) continue;
+    if (a.$ === "Lit" && b.$ === "Lit" && a.k === b.k && a.v === b.v) continue;
+    if (a.$ === "Qua" && b.$ === "Qua" && a.q.$ === b.q.$) continue;
+    if (a.$ === "Typ" && b.$ === "Typ") {
+      todo.push([a.g, b.g, d]);
+      continue;
+    }
+    if (a.$ === "App" && b.$ === "App") {
+      todo.push([a.x, b.x, d], [a.f, b.f, d]);
+      continue;
+    }
+    if (a.$ === "Lam" && b.$ === "Lam") {
+      const x: HTerm = Var(a.k, d);
+      todo.push([a.f(x), b.f(x), d + 1]);
+      continue;
+    }
+    if (a.$ === "ADT" && b.$ === "ADT") {
+      if (a.r.length > fuel || a.r.length !== b.r.length
+        || a.r.some((r, i) => r !== b.r[i])) return false;
+      fuel -= a.r.length;
+    }
+    if ((a.$ === "Ctr" && b.$ === "Ctr") || (a.$ === "ADT" && b.$ === "ADT")) {
+      if (a.k !== b.k || a.x.length !== b.x.length || a.x.length + todo.length > fuel) return false;
+      for (let i = a.x.length - 1; i >= 0; i--) todo.push([a.x[i], b.x[i], d]);
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
 
+// LE orders kinds and ADT residuals, contravariantly in All domains.
+// EQ is symmetric; arguments, parameters, fields and endpoints use EQ.
 export function term_compare(mode: "EQ" | "LE", book: Book, lhs: HTerm, rhs: HTerm, dep: number = 0): boolean {
-  if (lhs === rhs) {
+  if (lhs === rhs || term_same(lhs, rhs, dep)) {
     return true;
   }
   let a = term_wnf(book, lhs);
