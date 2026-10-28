@@ -2,8 +2,12 @@
 
 Bend is a dependently typed, affine language that checks in one linear
 bidirectional pass and runs massively parallel on CPU threads and GPUs.
-bend2/bend.ts is the language (parser, theory, checker) and is human-written:
-do not edit it. bend2/comp.ts is the one compiler: the C runtime (host and
+bend2/bend.ts is the language (parser, theory, checker). Agent edits to this
+kernel are permitted on this fork for the approved persistent checked-book
+snapshot plan, including measurement hooks and the representation, evaluator,
+checker and loader migration. Keep one canonical kernel; preserve language
+semantics and satisfy the plan's proof, conformance and performance gates.
+bend2/comp.ts is the one compiler: the C runtime (host and
 device from one source), the C emitter and the JS emitter; base.bend is the
 prelude; main.ts is the CLI. Every test is a Bend file that ends in the `#|`
 lines its run must print, and the gates run on the mini cluster.
