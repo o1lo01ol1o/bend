@@ -338,10 +338,15 @@ leaves copies $O(n log n)$ words. Get, set and swap open no half.
 
 = The Machine <sec:machine>
 
-On the host every segment is a `preserve_none` function of the
-machine's words, entered by a `musttail` call (a dynamic jump goes
-through a table of them); on the device the segments are the cases of
-one switch inside an error-polling loop. The state is a bank of words
+On a host whose compiler guarantees tail calls every segment is a
+`preserve_none` function of the machine's words, entered by a
+`musttail` call (a dynamic jump goes through a table of them); on the
+device the segments are the cases of one switch inside an
+error-polling loop, with the machine's words as its locals; on a Wasm
+target built without the engine's tail-call feature each segment is a
+plain function that returns to a driver loop, its words carried in a
+state record, so neither the engine's stack nor the optimizer sees one
+function holding every segment. The state is a bank of words
 `r0..rn` (a segment's parameters, or the results it receives), the
 current segment id, a value stack, and the world flag `seq`.
 

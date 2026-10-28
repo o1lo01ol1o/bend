@@ -150,6 +150,11 @@ const NATIVE_DIE = " does not match the native format of its type";
 // The term nodes one segment may gain by folding calls at compile time.
 const FOLD_FUEL = 8192;
 
+// Segments a trampoline chunk holds before the next def opens a new one:
+// enough that a def's continuations and its neighbours jump locally,
+// few enough that no chunk is a function the optimizer cannot finish.
+const WL_CHUNK = 64;
+
 // A native with this many lines or more is a call on both lanes: the
 // device inlines every native into every caller (hvm5 under a bang: 32 s
 // of Metal compile, 2.6 s so); at 128 raytrace lost 31% on PAR-CPU.
@@ -2971,18 +2976,58 @@ function compile_tables(fl: File, entries: Seg[]): string[] {
   `#define WL_SIG Env e, Stk sp, u32 seq, u32 rn, ${ws.map((w) =>
     "Term " + w).join(", ")}`, "", `#define WL_ALL e, sp, seq, rn, ${ws
     .join(", ")}`, "",
+  // The trampoline's state: the same words as WL_SIG, held across a
+  // segment's return to the driver (wpoll is the segment's own).
+  `#define WL_STATE Env e; Stk sp; u32 seq; u32 rn; WL_BANK`, "",
+  `#define WL_UNPACK Env e = w->e; Stk sp = w->sp; u32 seq = w->seq; `
+    + `u32 rn = w->rn; u32 wpoll = 0; ${ws.map((w) =>
+    `Term ${w} = w->${w};`).join(" ")}`, "",
+  `#define WL_PACK w->e = e; w->sp = sp; w->seq = seq; w->rn = rn; ${ws
+    .map((w) => `w->${w} = ${w};`).join(" ")}`, "",
   `#define WL_TABLE ${entries.map((s) => `WL_X(${s.fid})`).join(" ")}`
     + " WL_X(FID_EXIT)");
+  // The trampoline's chunks: each segment's chunk, by fid; the runtime's
+  // four segments (io_emit, clo_apply, exit, enter) form the last chunk.
+  const chunks = seg_chunks(fl);
+  const rt = chunks.length === 0 ? 0 : chunks[chunks.length - 1] + 1;
+  defs.push("", `#define WL_RT_CHUNK ${rt}`,
+    `#define WL_CHUNK_TABLE ${[...Array(rt + 1).keys()].map((c) =>
+      `WL_C(${c})`).join(" ")}`,
+    "#if WL_TRAMP",
+    `CONSTV u32 FID_CHUNK_T[] = { ${[...chunks, rt, rt, rt, rt].join(", ")} };`,
+    "#endif");
   return defs;
 }
 
+// A trampoline chunk closes once it holds WL_CHUNK segments and the next
+// segment opens another def, so a def's continuations share a chunk.
+function seg_chunks(fl: File): number[] {
+  const chunks: number[] = [];
+  let chunk = 0;
+  let held = 0;
+  fl.segs.forEach((seg, i) => {
+    if (held >= WL_CHUNK && seg.def !== fl.segs[i - 1].def) {
+      chunk += 1;
+      held = 0;
+    }
+    chunks.push(chunk);
+    held += 1;
+  });
+  return chunks;
+}
+
 function compile_segs(fl: File): string {
-  return fl.segs.map((seg) => {
+  const chunks = seg_chunks(fl);
+  return fl.segs.map((seg, i) => {
     const out = [`  WL_CASE(${seg.fid})`, "  {",
       ...seg_take(seg).map((l) => "    " + l),
       "    WL_OPEN", ...seg.spin ? ["    WL_SPIN"] : [],
       ...seg.lines, ...seg.spin ? ["    WL_SPUN"] : [], "  }}"];
-    return (seg.host ? ["#if !DEVICE", ...out, "#endif"] : out).join("\n");
+    const body = seg.host ? ["#if !DEVICE", ...out, "#endif"] : out;
+    const open = i === 0 || chunks[i - 1] !== chunks[i];
+    const close = i + 1 === fl.segs.length || chunks[i + 1] !== chunks[i];
+    return [...open ? [`WL_CHUNK_BEGIN(${chunks[i]})`] : [], ...body,
+      ...close ? ["WL_CHUNK_END"] : []].join("\n");
   }).join("\n\n");
 }
 
@@ -3444,18 +3489,59 @@ using namespace metal;
 #endif
 #define FAR static __attribute__((noinline))
 
-// A segment: a case of the device's switch; on the host, a preserve_none
-// function (WL_SIG) left by a musttail call, its words fresh at WL_OPEN.
+// The work loop's shape. A segment is one of three. On the device it is a
+// case of one switch inside an error-polling loop, with the machine's
+// words as the loop's locals. On a host whose clang guarantees the tail
+// call it is a preserve_none function (WL_SIG) left by a musttail call,
+// its words fresh at WL_OPEN. On WebAssembly built without the tail-call
+// feature it is a plain function returning to a driver loop through a
+// WlState: its words unpacked at entry, packed at every jump. A browser's
+// tail calls are an engine feature the build opts into (-mtail-call
+// defines __wasm_tail_call__), not a guarantee of the language, so the
+// generated program must not depend on them; and one function holding
+// every segment is too large for the optimizer (the authoring page has
+// thousands), so the segments stay functions there.
+#if DEVICE
+#define WL_LOOP  1
+#define WL_TRAMP 0
+#elif defined(__wasm__) && !defined(__wasm_tail_call__)
+#define WL_LOOP  0
+#define WL_TRAMP 1
+#else
+#define WL_LOOP  0
+#define WL_TRAMP 0
+#endif
 #if DEVICE
 #define LOCK(l)
 #define UNLOCK(l)
+#else
+#define LOCK(l)    while (__atomic_exchange_n(&(l), 1, __ATOMIC_ACQUIRE)) {}
+#define UNLOCK(l)  __atomic_store_n(&(l), 0, __ATOMIC_RELEASE)
+#endif
+#if WL_LOOP
 #define WL_CASE(F) case F:
 #define WL_OPEN    {
 #define WL_JMP(F)  { fid = (F); break; }
 #define WL_DYN     WL_JMP
+#elif WL_TRAMP
+#define WL_CASE(F) case F:
+#define WL_OPEN    {
+#define WL_JMP(F)  { if (FID_CHUNK_T[F] == wl_here) { fid = (F); break; } \
+  WL_PACK w->fid = (F); w->jump = 1; return 0; }
+#define WL_DYN     WL_JMP
+#define WL_CHUNK_BEGIN(N) WL_CHUNK_OPEN(N)
+#define WL_CHUNK_OPEN(N) \
+  static Reply wl_chunk_##N(WlState* restrict w) { \
+  WL_UNPACK \
+  const u32 wl_here = N; \
+  Fid fid = w->fid; \
+  for (;;) { \
+  if (err_spun(e.mem, &wpoll)) { return 0; } \
+  switch (fid) {
+#define WL_CHUNK_END \
+  default: { err_post(e.mem, ERR_FIDS); return 0; } \
+  }}}
 #else
-#define LOCK(l)    while (__atomic_exchange_n(&(l), 1, __ATOMIC_ACQUIRE)) {}
-#define UNLOCK(l)  __atomic_store_n(&(l), 0, __ATOMIC_RELEASE)
 #define WL_FN      static PRESERVE(preserve_none) __attribute__((noinline)) Reply
 #define WL_CASE(F) WL_FN WL_##F(WL_SIG)
 #define WL_OPEN    { WL_BANK u32 rn;
@@ -3464,6 +3550,10 @@ using namespace metal;
 #endif
 #define WL_SPIN     for (;;) { if (err_spun(e.mem, &wpoll)) { return 0; }
 #define WL_SPUN     } break;
+#if !WL_TRAMP
+#define WL_CHUNK_BEGIN(N)
+#define WL_CHUNK_END
+#endif
 #define WL_AGAIN(F) continue
 #define WL_POP()    { sp -= LANE_STEP; WL_DYN((Fid)STK(0)); }
 
@@ -4478,16 +4568,24 @@ static u32 root_take(Corpus H, THR Term* v) {
 // Work
 // ====
 
-// A host self-jump is a tail call: as a loop, MachineLICM hoisted eleven
-// constants into symreg's entry (3.05 s against 2.51 s).
-#if !DEVICE
+// A tail-call host's self-jump is a tail call: as a loop, MachineLICM
+// hoisted eleven constants into symreg's entry (3.05 s against 2.51 s).
+// The device and the trampoline keep the loop's continue.
+#if WL_TRAMP
+typedef struct { WL_STATE Fid fid; u32 jump; } WlState;
+#define WL_C(N) static Reply wl_chunk_##N(WlState* restrict w);
+WL_CHUNK_TABLE
+#undef WL_C
+#define WL_C(N) wl_chunk_##N,
+static Reply (*const wl_chunks[])(WlState* restrict) = { WL_CHUNK_TABLE };
+#undef WL_C
+#elif !WL_LOOP
 #undef  WL_SPIN
 #undef  WL_SPUN
 #undef  WL_AGAIN
 #define WL_SPIN
 #define WL_SPUN
 #define WL_AGAIN(F) __attribute__((musttail)) return WL_##F(WL_ALL)
-
 typedef Reply (PRESERVE(preserve_none) *WlFn)(WL_SIG);
 #define WL_X(F) WL_FN WL_##F(WL_SIG);
 WL_TABLE WL_X(FID_ENTER)
@@ -4497,11 +4595,26 @@ static const WlFn wl_tab[] = { WL_TABLE };
 #undef WL_X
 #endif
 
+#if WL_TRAMP
+// The driver: a chunk either returns its reply or, having packed the
+// machine's words, names a segment in another chunk. Every far jump
+// returns here, so the engine's stack never grows across them.
+static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
+  WlState s = { .e = e, .sp = sp, .seq = seq, .rn = 0, .r0 = t,
+    .fid = FID_ENTER, .jump = 0 };
+  Reply r;
+  do {
+    s.jump = 0;
+    r = wl_chunks[FID_CHUNK_T[s.fid]](&s);
+  } while (s.jump);
+  return r;
+}
+#else
 static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
   WL_BANK
   u32 rn = 0;
   r0 = t;
-#if DEVICE
+#if WL_LOOP
   Fid fid   = FID_ENTER;
   u32 wpoll = 0;
   for (;;) {
@@ -4513,12 +4626,14 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
   return WL_FID_ENTER(WL_ALL);
 }
 #endif
+#endif
 
 // Segments
 // ========
 
 // A task enters through its words: a continuation's results ride r0.. and
 // its parameters the stack; any other segment's parameters ride r0...
+WL_CHUNK_BEGIN(WL_RT_CHUNK)
   WL_CASE(FID_ENTER)
   {
     Term t = r0;
@@ -4588,8 +4703,9 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     }
     return task_deliver(e.mem, cont, idx, rv, n);
   }}
+WL_CHUNK_END
 
-#if DEVICE
+#if WL_LOOP
   default: {
     err_post(e.mem, ERR_FIDS);
     return 0;
