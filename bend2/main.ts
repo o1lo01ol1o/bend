@@ -40,7 +40,7 @@ const BUILD = "";
 const USAGE = [
   ["bend <file.bend> [args]", "check the file, then run main with args"],
   ["bend <file.bend> -o <out>", "build a binary, or C, JS, .mjs or BendTT by extension"],
-  ["bend <file.bend> --check-only", "check the file and its imports; run nothing"],
+  ["bend <file.bend> --check-only [--allow-unsafe]", "check imports; optionally permit unsafe assumptions, not foreign code"],
   ["bend <file.bend> --verdict", "check it, then recheck it with the proven kernel"],
   ["bend <file.bend> --publish [<name>@<version>]", "publish the file and its imports; a name needs login"],
   ["bend link <name>@<version> 0x<hash>", "name a package already on the hub"],
@@ -242,6 +242,7 @@ async function cli_file(args: string[]): Promise<void> {
   const argv: string[] = [];
   let file: string | undefined;
   let only = false;
+  let allowUnsafe = false;
   let verdict = false;
   let checkup = false;
   let publish = false;
@@ -252,6 +253,8 @@ async function cli_file(args: string[]): Promise<void> {
       return cli_say(1, HELP);
     } else if (a === "--check-only") {
       only = true;
+    } else if (a === "--allow-unsafe") {
+      allowUnsafe = true;
     } else if (a === "--verdict") {
       verdict = true;
     } else if (a === "--checkup") {
@@ -279,6 +282,9 @@ async function cli_file(args: string[]): Promise<void> {
   if (file === undefined) {
     cli_say(1, HELP);
     process.exit(1);
+  }
+  if (allowUnsafe && (!only || verdict)) {
+    cli_fail("--allow-unsafe requires --check-only, not --verdict");
   }
   if (file.endsWith(".html") && (outs.length !== 1 || only || verdict
     || checkup || publish || argv.length !== 0)) {
@@ -310,11 +316,11 @@ async function cli_file(args: string[]): Promise<void> {
     }
     const { book, seen } = await book_read(file);
     if (only || verdict) {
-      process.exitCode = cli_verdict(book, verdict);
+      process.exitCode = cli_verdict(book, verdict, allowUnsafe ? "allow-unsafe" : "proof");
       return;
     }
     if (outs.length === 0) {
-      process.exitCode = book_run(book, [file, ...argv]);
+      process.exitCode = await book_run(book, [file, ...argv]);
       return;
     }
     const ins = new Set([...seen.keys(), ...Object.values(book.tlds).flatMap((t) =>
@@ -376,7 +382,7 @@ async function cli_checkup(file: string): Promise<void> {
       const head = /^\s*import(\s.*)?$/m.exec(fs.readFileSync(at, "utf8"));
       const own = /^\s*import\s+Base\s*(#.*)?$/.test(head?.[0] ?? "");
       const { book } = await book_read(at, own ? base : undefined);
-      code = book_run(book, [at]);
+      code = await book_run(book, [at]);
     } catch (e) {
       cli_say(2, book_err(e) + "\n");
     }
@@ -926,20 +932,10 @@ async function pow_mine(hash: string, bytes: number): Promise<number> {
 // a mismatch: bend2 accepted what the kernel rejects; it shows the why.
 // When none of those is a law or a def of the file, no law or proof uses
 // them: they come in through imports, and a hint names them.
-function cli_verdict(book: Bend.Book, kernel: boolean): number {
-  const bad = book_promises(book);
-  const n   = new Set(bad.flatMap(([, ks]) => ks)).size;
-  if (n !== 0) {
-    const own = bad.some(([, ks]) => ks.some((k) =>
-      !k.includes(":") || (book.tlds[k] as Bend.Def).l === true));
-    cli_say(2, FAIL + "\nError: " + String(n) + " def" + (n === 1 ? " relies"
-      : "s rely") + " on unsafe or foreign code:\n"
-      + bad.map(([on, ks]) => "defs that depend on " + on + ": "
-        + ks.map(Bend.name_key).join(", ") + "\n").join("")
-      + (own ? "" : "Hint: no law or proof uses these defs. Move them to a"
-        + " file this proof does not import, and the proofs will check: "
-        + [...new Set(bad.flatMap(([, ks]) => ks))].map(Bend.name_key)
-          .join(", ") + "\n"));
+function cli_verdict(book: Bend.Book, kernel: boolean, policy: BookPolicy = "proof"): number {
+  const report = book_report(book, undefined, policy);
+  if (report.$ === "Fail") {
+    cli_say(2, report.message + "\n");
     return 1;
   }
   const why = kernel ? Safe.safe_check(book) : null;
@@ -947,8 +943,80 @@ function cli_verdict(book: Bend.Book, kernel: boolean): number {
     cli_say(2, FAIL + "\n" + why + "\n" + MISMATCH + "\n");
     return 1;
   }
-  cli_say(1, PASS + "\n" + (kernel ? "" : HINT + "\n"));
+  cli_say(1, kernel ? PASS + "\n" : report.message + "\n");
   return 0;
+}
+
+// A checked book's non-kernel verdict. Restored books may supply their
+// stored record summaries, so reporting never needs to raise their terms.
+export type BookReport =
+  | { $: "Pass"; message: string }
+  | { $: "Fail"; message: string; reliant: string[] };
+
+export type BookRecord = {
+  base: boolean;
+  law: boolean;
+  promise: "unsafe" | "foreign" | null;
+  refs: readonly string[];
+};
+
+// Unsafe checking is explicit: it permits termination assumptions only, never
+// foreign code, and never prints an assumption-free proof verdict.
+export type BookPolicy = "proof" | "allow-unsafe";
+
+export function book_report(book: Bend.Book,
+  read: (key: string) => BookRecord | undefined = (key) => book_record(book, key),
+  policy: BookPolicy = "proof"
+): BookReport {
+  const promises = book_promises(book, read);
+  const bad = policy === "proof" ? promises
+    : promises.filter(([on]) => on !== "@unsafe");
+  const n   = new Set(bad.flatMap(([, ks]) => ks)).size;
+  if (n !== 0) {
+    const own = bad.some(([, ks]) => ks.some((k) =>
+      !k.includes(":") || read(k)?.law === true));
+    const message = FAIL + "\nError: " + String(n) + " def" + (n === 1 ? " relies"
+      : "s rely") + " on unsafe or foreign code:\n"
+      + bad.map(([on, ks]) => "defs that depend on " + on + ": "
+        + ks.map(Bend.name_key).join(", ") + "\n").join("")
+      + (own ? "" : "Hint: no law or proof uses these defs. Move them to a"
+        + " file this proof does not import, and the proofs will check: "
+        + [...new Set(bad.flatMap(([, ks]) => ks))].map(Bend.name_key)
+          .join(", ") + "\n");
+    return { $: "Fail", message: message.slice(0, -1),
+      reliant: [...new Set(bad.flatMap(([, ks]) => ks))].map(Bend.name_key) };
+  }
+  if (policy === "allow-unsafe") {
+    const unsafe = promises.flatMap(([, ks]) => ks).map(Bend.name_key);
+    return { $: "Pass", message: "ALL TERMS CHECK\n"
+      + "Not an assumption-free proof verdict.\n"
+      + (unsafe.length === 0 ? "No unsafe dependencies."
+        : "Assumes @unsafe: " + unsafe.join(", ")) };
+  }
+  return { $: "Pass", message: PASS + "\n" + HINT };
+}
+
+function book_record(book: Bend.Book, key: string): BookRecord | undefined {
+  const t = book.tlds[key];
+  if (t === undefined) {
+    return undefined;
+  }
+  return {
+    base: t.b === true,
+    law: t.$ === "Def" && t.l === true,
+    promise: t.$ === "Def" && t.u === true ? "unsafe"
+      : t.$ === "Def" && t.i !== undefined && t.b !== true ? "foreign" : null,
+    get refs() {
+      const rs = new Set<string>();
+      for (const c of t.$ === "ADT" ? [t, ...t.c] : [t]) {
+        term_refs(Bend.term_lower(c.T), rs);
+      }
+      if (t.$ === "Def" && t.e !== undefined) {
+        term_refs(t.e, rs);
+      }
+      return [...rs];
+    },
+  };
 }
 
 // book_promises lists, per promise (@unsafe, foreign effects), the defs
@@ -958,33 +1026,29 @@ function cli_verdict(book: Bend.Book, kernel: boolean): number {
 // its type, never its code. If the book holds a promise, a walk from the
 // defs outside Base collects who names whom, then each promise floods
 // back along those edges.
-function book_promises(book: Bend.Book): Array<[string, string[]]> {
+function book_promises(book: Bend.Book,
+  read: (key: string) => BookRecord | undefined
+): Array<[string, string[]]> {
   const unsafe: string[] = [];
   const foreign: string[] = [];
-  for (const [k, t] of Object.entries(book.tlds) as Array<[string, Bend.Def]>) {
-    if (t.u === true) {
+  for (const k in book.tlds) {
+    const promise = read(k)?.promise;
+    if (promise === "unsafe") {
       unsafe.push(k);
-    } else if (t.i !== undefined && t.b !== true) {
+    } else if (promise === "foreign") {
       foreign.push(k);
     }
   }
   if (unsafe.length === 0 && foreign.length === 0) {
     return [];
   }
-  const own = [...new Set(book.order)].filter((k) => book.tlds[k].b !== true);
+  const own = [...new Set(book.order)].filter((k) => read(k)?.base === false);
   const uses: Record<string, string[]> = Object.create(null);
   const reach = new Set(own);
   for (const k of reach) {
-    const t = book.tlds[k];
+    const t = read(k);
     if (t !== undefined) {
-      const rs = new Set<string>();
-      for (const c of t.$ === "ADT" ? [t, ...t.c] : [t]) {
-        term_refs(Bend.term_lower(c.T), rs);
-      }
-      if (t.$ === "Def" && t.e !== undefined) {
-        term_refs(t.e, rs);
-      }
-      for (const r of rs) {
+      for (const r of t.refs) {
         (uses[r] ??= []).push(k);
         reach.add(r);
       }
@@ -1120,7 +1184,7 @@ function book_main(book: Bend.Book): Bend.Def | null {
     || (main.v === null && main.i === undefined) ? null : main;
 }
 
-function book_run(book: Bend.Book, argv: string[]): number {
+async function book_run(book: Bend.Book, argv: string[]): Promise<number> {
   const main = book_main(book);
   if (main === null) {
     return cli_verdict(book, false);
@@ -1133,7 +1197,10 @@ function book_run(book: Bend.Book, argv: string[]): number {
   return 0;
 }
 
-function book_err(e: unknown): string {
+export function book_err(e: unknown, checking = false): string {
+  if (checking) {
+    return book_err(new Check_Fail(e));
+  }
   if (e instanceof Check_Fail) {
     return FAIL + "\n" + book_err(e.why);
   }
