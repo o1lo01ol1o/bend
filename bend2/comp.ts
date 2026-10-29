@@ -1363,7 +1363,7 @@ export function io_type(book: Bend.Book): HTerm | null {
   return xs?.length === 1 ? xs[0] : null;
 }
 
-export function io_run(book: Bend.Book, args: string[]): number {
+export function io_run(book: Bend.Book, args: string[]): Promise<number> {
   const src = `${js_lib(book)}\n${RUNTIME_MAIN}\ncli_args = ${
     JSON.stringify(args)};\nreturn io_run(${name_id("$", "main")});`;
   return new Function("require", src)(import.meta.require);
@@ -6209,9 +6209,9 @@ function cli(argv) {
 // out) and/or until at; once due, io_wait calls more and resumes k with its
 // value, or parks it again on undefined. Waits stay in deadline order.
 
-function io_exit(main) {
+async function io_exit(main) {
   try {
-    process.exit(io_run(main));
+    process.exit(await io_run(main));
   } catch (e) {
     io_errs(String(e));
     process.exit(1);
@@ -6422,24 +6422,75 @@ function io_park_on(fd, out, k, more, at = Infinity) {
   return t;
 }
 
-function io_run(m) {
-  const io = { runs: [], live: 0, waits: [] };
+// Promise effects park the same continuation as native effects. Only the
+// scheduler resumes it; a settlement never runs Bend on the host's stack.
+function io_promise(io, promise, k) {
+  io.pending += 1;
+  Promise.resolve(promise).then((x) => {
+    if (io.done) return;
+    if (x === undefined) {
+      io.errors.push("bend: a Promise effect returned undefined");
+    } else {
+      io_push(k, x, false, io);
+    }
+  }, (error) => {
+    if (!io.done) io.errors.push(error);
+  }).finally(() => {
+    io.pending -= 1;
+    io.wake?.();
+  });
+}
+
+// Native descriptors have no JS notification. While Promises are parked,
+// poll them without blocking the event loop, at most 10ms apart. Timers and
+// Promise-only waits need no polling. Cancel the deadline on early wakeup.
+function io_pending(io) {
+  io_sync();
+  const soon = io.waits[0]?.at ?? Infinity;
+  const fds = io.waits.some((w) => w.fd !== undefined);
+  const ms = Math.min(fds ? 10 : Infinity,
+    Math.max(0, Math.ceil(soon - performance.now())));
+  return new Promise((resolve) => {
+    let timer;
+    io.wake = () => {
+      clearTimeout(timer);
+      io.wake = undefined;
+      resolve();
+    };
+    if (ms !== Infinity) timer = setTimeout(io.wake, ms);
+  });
+}
+
+async function io_run(m) {
+  const io = { runs: [], live: 0, waits: [], pending: 0, errors: [],
+    done: false, wake: undefined };
   const parent = io_active;
   io_active = io;
   try {
     io_push(run_loop(m()), (x) => ({ $: "Emit", value: x }), true);
     let look = 0;
     for (let n = 0;; n += 1) {
+      if (io.errors.length > 0) throw io.errors.shift();
       if (io.runs.length === 0) {
         if (io.live === 0) {
           return 0;
         }
-        if (io.waits.length === 0) {
-          io_errs("bend: deadlock: every computation waits on a channel");
-          return 1;
+        if (io.pending > 0) {
+          await io_pending(io);
+          if (io.waits.length > 0) io_wait(io, false);
+        } else {
+          if (io.waits.length === 0) {
+            io_errs("bend: deadlock: every computation waits on a channel");
+            return 1;
+          }
+          io_wait(io, true);
         }
-        io_wait(io, true);
         continue;
+      }
+      // Runnable Bend threads must not starve host Promise timers either.
+      if ((n & 63) === 0 && io.pending > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (io.errors.length > 0) throw io.errors.shift();
       }
       if ((n & 63) === 0 && io.waits.length > 0) {
         const now = performance.now();
@@ -6468,6 +6519,11 @@ function io_run(m) {
           throw "bend: no effect registers " + op.$;
         }
         const x = run(...op.args, op.kont);
+        if (x !== null && (typeof x === "object" || typeof x === "function")
+          && typeof x.then === "function") {
+          io_promise(io, x, op.kont);
+          break;
+        }
         if (x === undefined) {
           break;
         }
