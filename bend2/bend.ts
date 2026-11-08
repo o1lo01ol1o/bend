@@ -3145,6 +3145,49 @@ export function term_snf(book: Book, term: HTerm): HTerm {
 // same walk, kinds exact, no swap (a swap under EQ is harmless, so
 // the All case swaps unconditionally).
 
+// Positive alpha-congruence before reduction. Failure or exhaustion says
+// nothing: rigid comparison and ordinary conversion remain the fallback.
+// The probe is local to this call, never cached across checked book views.
+function term_same(lhs: HTerm, rhs: HTerm, dep: number): boolean {
+  const todo: [HTerm, HTerm, number][] = [[lhs, rhs, dep]];
+  let fuel = 8192;
+  while (todo.length) {
+    if (fuel-- <= 0) return false;
+    const [a0, b0, d] = todo.pop()!;
+    const a = term_strip(a0), b = term_strip(b0);
+    if (a === b) continue;
+    if (a.$ === "Ref" && b.$ === "Ref" && a.k === b.k) continue;
+    if (a.$ === "Var" && b.$ === "Var" && a.i >= 0 && a.i === b.i) continue;
+    if (a.$ === "Lit" && b.$ === "Lit" && a.k === b.k && a.v === b.v) continue;
+    if (a.$ === "Qua" && b.$ === "Qua" && a.q.$ === b.q.$) continue;
+    if (a.$ === "Typ" && b.$ === "Typ") {
+      todo.push([a.g, b.g, d]);
+      continue;
+    }
+    if (a.$ === "App" && b.$ === "App") {
+      todo.push([a.x, b.x, d], [a.f, b.f, d]);
+      continue;
+    }
+    if (a.$ === "Lam" && b.$ === "Lam") {
+      const x: HTerm = Var(a.k, d);
+      todo.push([a.f(x), b.f(x), d + 1]);
+      continue;
+    }
+    if (a.$ === "ADT" && b.$ === "ADT") {
+      if (a.r.length > fuel || a.r.length !== b.r.length
+        || a.r.some((r, i) => r !== b.r[i])) return false;
+      fuel -= a.r.length;
+    }
+    if ((a.$ === "Ctr" && b.$ === "Ctr") || (a.$ === "ADT" && b.$ === "ADT")) {
+      if (a.k !== b.k || a.x.length !== b.x.length || a.x.length + todo.length > fuel) return false;
+      for (let i = a.x.length - 1; i >= 0; i--) todo.push([a.x[i], b.x[i], d]);
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 const RIGID: Book = book_nil();
 
 // two copies of one term are equal: a conversion first compares both
@@ -3162,7 +3205,7 @@ function cell_class(t: Cell): Cell {
 }
 
 function compare_go(mode: "EQ" | "LE", book: Book, lhs: HTerm, rhs: HTerm, dep: number): boolean {
-  if (lhs === rhs) {
+  if (lhs === rhs || term_same(lhs, rhs, dep)) {
     return true;
   }
   let a = term_wnf(book, lhs);
