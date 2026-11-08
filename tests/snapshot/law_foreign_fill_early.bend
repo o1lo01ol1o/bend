@@ -12,6 +12,7 @@ def g() -> IO(Unit):
 def f():
   import "./law_fill_eff.js"
 
-#|All terms check, but 2 defs rely on unsafe or foreign code:
-#|- f
-#|- g
+#|SOME PROOFS FAIL
+#|Error: 2 defs rely on unsafe or foreign code:
+#|defs that depend on foreign effects: f, g
+#|exit 1

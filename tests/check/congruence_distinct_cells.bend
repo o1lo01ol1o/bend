@@ -9,6 +9,7 @@ def bad(+x: Nat, +y: Nat) -> {id_nat(x) == id_nat(y) : Nat}:
   {==}
 # Distinct variables are not definitionally equal.
 
+#|SOME PROOFS FAIL
 #|Error:
 #|- expected : x
 #|- observed : y
@@ -18,5 +19,7 @@ def bad(+x: Nat, +y: Nat) -> {id_nat(x) == id_nat(y) : Nat}:
 #|Location: bad
 #| 8 | def bad(+x: Nat, +y: Nat) -> {id_nat(x) == id_nat(y) : Nat}:
 #| 9>|   {==}
+#|   |   ^^^^
 #|10 | # Distinct variables are not definitionally equal.
+#|Note: the left side of the equality is the expected, the right side is the observed.
 #|exit 1

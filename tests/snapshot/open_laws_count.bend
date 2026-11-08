@@ -10,6 +10,7 @@ law b:
 def c() -> Nat:
   ?TODO
 
+#|SOME PROOFS FAIL
 #|Error: 3 TODOs found.
 #|The code is incomplete, and not a valid proof yet.
 #|exit 1

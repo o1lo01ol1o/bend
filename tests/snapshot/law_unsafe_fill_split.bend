@@ -9,5 +9,7 @@ import ./law-split/laws.bend as L
 def L.dup(x):
   0
 
-#|All terms check, but 1 def relies on unsafe or foreign code:
-#|- law-split/laws.dup
+#|SOME PROOFS FAIL
+#|Error: 1 def relies on unsafe or foreign code:
+#|defs that depend on @unsafe: law-split/laws.dup
+#|exit 1
