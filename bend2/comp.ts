@@ -3031,8 +3031,14 @@ function c_header(segs: Seg[], clos: string[]): string {
     `CONSTV u64 TAB_${i}[] = { ${r} };`)].join("\n\n");
 }
 
+// Expose output-wrapper elaboration separately so restored books can replay
+// the generated wrapper's dependencies before code generation.
+export function prepare_book(book: Bend.Book, target: "js" | "c"): Bend.Book {
+  return main_pure(book, target === "js");
+}
+
 export function compile_book(book: Bend.Book): string {
-  FL = file_new(main_pure(book), false);
+  FL = file_new(prepare_book(book, "c"), false);
   file_book(["main", ...RUNTIME_ADTS]);
   const us = c_units();
   const all = us.flatMap((u) => u.segs);
@@ -3381,7 +3387,7 @@ export function js_lib(book: Bend.Book, mod = false): string {
 }
 
 export function js_book(book: Bend.Book): string {
-  return `${js_lib(main_pure(book, true))}\n${RUNTIME_MAIN}\n`
+  return `${js_lib(prepare_book(book, "js"))}\n${RUNTIME_MAIN}\n`
     + `cli(process.argv.slice(1));\nio_exit(${name_id("$", "main")});`;
 }
 
