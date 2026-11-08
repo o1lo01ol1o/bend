@@ -34,7 +34,7 @@ const VERSION = "2.0.40";
 
 // BUILD tags a fork's bend after its version as semver build metadata:
 // "+win" prints bend <version>+win; upstream leaves it empty
-const BUILD = "";
+const BUILD = "+poc.1";
 
 // the commands, one row each: [usage, what it does]; bend guide stays last
 const USAGE = [
@@ -949,9 +949,12 @@ function cli_verdict(book: Bend.Book, kernel: boolean, policy: BookPolicy = "pro
 
 // A checked book's non-kernel verdict. Restored books may supply their
 // stored record summaries, so reporting never needs to raise their terms.
+// A failing report's `own` says whether any reliant def is the entry's own
+// or a law; when it is false, the entry's claims rely on nothing contracted
+// and only imported defs do (the case the hint names).
 export type BookReport =
   | { $: "Pass"; message: string }
-  | { $: "Fail"; message: string; reliant: string[] };
+  | { $: "Fail"; message: string; reliant: string[]; own: boolean };
 
 export type BookRecord = {
   base: boolean;
@@ -984,7 +987,7 @@ export function book_report(book: Bend.Book,
         + [...new Set(bad.flatMap(([, ks]) => ks))].map(Bend.name_key)
           .join(", ") + "\n");
     return { $: "Fail", message: message.slice(0, -1),
-      reliant: [...new Set(bad.flatMap(([, ks]) => ks))].map(Bend.name_key) };
+      reliant: [...new Set(bad.flatMap(([, ks]) => ks))].map(Bend.name_key), own };
   }
   if (policy === "allow-unsafe") {
     const unsafe = promises.flatMap(([, ks]) => ks).map(Bend.name_key);
