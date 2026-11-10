@@ -34,7 +34,7 @@ const VERSION = "2.0.40";
 
 // BUILD tags a fork's bend after its version as semver build metadata:
 // "+win" prints bend <version>+win; upstream leaves it empty
-const BUILD = "+poc.2";
+const BUILD = "+poc.3";
 
 // the commands, one row each: [usage, what it does]; bend guide stays last
 const USAGE = [
