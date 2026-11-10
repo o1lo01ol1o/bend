@@ -1295,7 +1295,10 @@ function facts_hot(def: Name, B: HTerm | null, force: boolean,
     const fam = m && done_live(m.tld) && term_strip(Bend.term_unapply(
       m.all.reduce((b, x) => Bend.term_apply(b, x), m.tld.v!))[0]);
     if (m && fam && fam.$ === "Mat") {
-      m.all.forEach((x) => facts_hot(def, x, true, local));
+      // A value def stuck under an index decides no layout
+      if (tele_unbind(m.tld!.T).ret.$ === "Typ") {
+        m.all.forEach((x) => facts_hot(def, x, true, local));
+      }
       if (fact_add("fam", (m.t as Of<"Ref">).k)) {
         facts_hot(def, fam, true, local);
       }
