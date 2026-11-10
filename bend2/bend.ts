@@ -1483,13 +1483,30 @@ export function term_show(term: LTerm, top: number = -1, bnd: Name[] = [], file?
   return go(term, top);
 }
 
+// A diagnostic shows its terms normalized, under a budget of SHOW_FUEL
+// normalization steps (each one weak-head normal form, each counted
+// node). A term whose normal form is larger, or costs more to reach,
+// prints unnormalized instead, as the checker holds it: normalizing a
+// large error term took hours and ran out of memory, while the error
+// itself was found in seconds.
+const SHOW_FUEL = 1 << 16;
+
 export function expr_show(book: Book, x: Expr, bnd: Name[] = [], file?: File): string {
   if (typeof x === "string") {
     return x;
-  } else {
-    const t = term_lower(term_snf(book, x), bnd.length);
-    return term_show(t, -1, bnd, file);
   }
+  // the bodies of binders normalize lazily, as term_lower opens them, so
+  // the budget spans the lowering too
+  let t: LTerm;
+  try {
+    t = term_lower(term_snf(book, x, { n: SHOW_FUEL }), bnd.length);
+  } catch (e) {
+    if (e !== SNF_SPENT) {
+      throw e;
+    }
+    t = term_lower(x, bnd.length);
+  }
+  return term_show(t, -1, bnd, file);
 }
 
 export function err_lost_type(err: Err): string | undefined {
@@ -3088,42 +3105,50 @@ export function term_wnf(book: Book, term: HTerm): HTerm {
 // SNF
 // ===
 
-export function term_snf(book: Book, term: HTerm): HTerm {
+// term_snf(book, term, fuel): with fuel, each node taken to weak-head
+// normal form spends one unit, and spending past zero throws SNF_SPENT.
+// Without fuel, normalization is unbounded.
+export const SNF_SPENT: unique symbol = Symbol("SNF_SPENT");
+
+export function term_snf(book: Book, term: HTerm, fuel?: { n: number }): HTerm {
+  if (fuel !== undefined && --fuel.n < 0) {
+    throw SNF_SPENT;
+  }
   const tm = term_wnf(book, term);
   switch (tm.$) {
     case "Typ": {
-      return Typ(term_snf(book, tm.g), tm.s);
+      return Typ(term_snf(book, tm.g, fuel), tm.s);
     }
     case "Min": {
-      return Min(term_snf(book, tm.a), term_snf(book, tm.b), tm.s);
+      return Min(term_snf(book, tm.a, fuel), term_snf(book, tm.b, fuel), tm.s);
     }
     case "All": {
-      return All(tm.q, tm.k, tm.i, term_snf(book, tm.A), (x: HTerm) => {
-        return term_snf(book, tm.B(x));
+      return All(tm.q, tm.k, tm.i, term_snf(book, tm.A, fuel), (x: HTerm) => {
+        return term_snf(book, tm.B(x), fuel);
       }, tm.s);
     }
     case "Lam": {
       return Lam(tm.k, tm.i, (x: HTerm) => {
-        return term_snf(book, tm.f(x));
+        return term_snf(book, tm.f(x), fuel);
       }, tm.s);
     }
     case "App": {
-      return App(tm.f.$ === "Ref" ? tm.f : term_snf(book, tm.f), term_snf(book, tm.x), tm.s);
+      return App(tm.f.$ === "Ref" ? tm.f : term_snf(book, tm.f, fuel), term_snf(book, tm.x, fuel), tm.s);
     }
     case "ADT": {
-      return ADT(tm.k, tm.x.map((x) => term_snf(book, x)), tm.s, tm.r);
+      return ADT(tm.k, tm.x.map((x) => term_snf(book, x, fuel)), tm.s, tm.r);
     }
     case "Ctr": {
-      return Ctr(tm.k, tm.x.map((x) => term_snf(book, x)), tm.s);
+      return Ctr(tm.k, tm.x.map((x) => term_snf(book, x, fuel)), tm.s);
     }
     case "Mat": {
-      return Mat(tm.k, term_snf(book, tm.h), term_snf(book, tm.m), tm.s);
+      return Mat(tm.k, term_snf(book, tm.h, fuel), term_snf(book, tm.m, fuel), tm.s);
     }
     case "Eql": {
-      return Eql(term_snf(book, tm.a), term_snf(book, tm.b), term_snf(book, tm.T), tm.s);
+      return Eql(term_snf(book, tm.a, fuel), term_snf(book, tm.b, fuel), term_snf(book, tm.T, fuel), tm.s);
     }
     case "Rwt": {
-      return Rwt(term_snf(book, tm.e), term_snf(book, tm.p), term_snf(book, tm.f), tm.s);
+      return Rwt(term_snf(book, tm.e, fuel), term_snf(book, tm.p, fuel), term_snf(book, tm.f, fuel), tm.s);
     }
     default: {
       return tm;
