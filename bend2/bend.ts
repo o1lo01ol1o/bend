@@ -798,48 +798,59 @@ export function term_higher(tm: LTerm, env: Env = null): HTerm {
   }
 }
 
-export function term_lower(term: HTerm, d: number = 0): LTerm {
+// term_lower is a term's first-order syntax at depth d; with low, a node
+// met again at a depth (a let's value at each use) lowers once, shared.
+export function term_lower(term: HTerm, d: number = 0, low?: Map<HTerm, LTerm[]>): LTerm {
   const tm = term_force(term);
+  if (low === undefined) {
+    return term_lower_at(tm, d);
+  }
+  const at = low.get(tm) ?? [];
+  low.set(tm, at);
+  return at[d] ??= term_lower_at(tm, d, low);
+}
+
+function term_lower_at(tm: HTerm, d: number, low?: Map<HTerm, LTerm[]>): LTerm {
   switch (tm.$) {
     case "Let": {
       const xs = tm.k.map((k, j): HTerm => Var(k, d + j));
-      const vs = tm.v.map((v) => term_lower(v, d));
-      return Let(tm.k, xs.map((_, j) => d + j), vs, term_lower(tm.f(xs), d + tm.k.length), tm.s, tm.q);
+      const vs = tm.v.map((v) => term_lower(v, d, low));
+      return Let(tm.k, xs.map((_, j) => d + j), vs, term_lower(tm.f(xs), d + tm.k.length, low), tm.s, tm.q);
     }
     case "Typ": {
-      return Typ(term_lower(tm.g, d), tm.s);
+      return Typ(term_lower(tm.g, d, low), tm.s);
     }
     case "Min": {
-      return Min(term_lower(tm.a, d), term_lower(tm.b, d), tm.s);
+      return Min(term_lower(tm.a, d, low), term_lower(tm.b, d, low), tm.s);
     }
     case "All": {
       const x: HTerm = Var(tm.k, d);
-      return All(tm.q, tm.k, d, term_lower(tm.A, d), term_lower(tm.B(x), d + 1), tm.s);
+      return All(tm.q, tm.k, d, term_lower(tm.A, d, low), term_lower(tm.B(x), d + 1, low), tm.s);
     }
     case "Lam": {
       const x: HTerm = Var(tm.k, d);
-      return Lam(tm.k, d, term_lower(tm.f(x), d + 1), tm.s, tm.q);
+      return Lam(tm.k, d, term_lower(tm.f(x), d + 1, low), tm.s, tm.q);
     }
     case "App": {
-      return App(term_lower(tm.f, d), term_lower(tm.x, d), tm.s);
+      return App(term_lower(tm.f, d, low), term_lower(tm.x, d, low), tm.s);
     }
     case "ADT": {
-      return ADT(tm.k, tm.x.map((x) => term_lower(x, d)), tm.s, tm.r);
+      return ADT(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s, tm.r);
     }
     case "Ctr": {
-      return Ctr(tm.k, tm.x.map((x) => term_lower(x, d)), tm.s);
+      return Ctr(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s);
     }
     case "Mat": {
-      return Mat(tm.k, term_lower(tm.h, d), term_lower(tm.m, d), tm.s);
+      return Mat(tm.k, term_lower(tm.h, d, low), term_lower(tm.m, d, low), tm.s);
     }
     case "Eql": {
-      return Eql(term_lower(tm.a, d), term_lower(tm.b, d), term_lower(tm.T, d), tm.s);
+      return Eql(term_lower(tm.a, d, low), term_lower(tm.b, d, low), term_lower(tm.T, d, low), tm.s);
     }
     case "Rwt": {
-      return Rwt(term_lower(tm.e, d), term_lower(tm.p, d), term_lower(tm.f, d), tm.s);
+      return Rwt(term_lower(tm.e, d, low), term_lower(tm.p, d, low), term_lower(tm.f, d, low), tm.s);
     }
     case "Ann": {
-      return Ann(term_lower(tm.x, d), term_lower(tm.T, d), tm.s);
+      return Ann(term_lower(tm.x, d, low), term_lower(tm.T, d, low), tm.s);
     }
     default: {
       return tm as LTerm;
@@ -1216,6 +1227,38 @@ const ESCAPES: Record<string, U32> = {
 
 export function term_key(tm: LTerm): string {
   return JSON.stringify(tm, (k, v) => k === "s" ? undefined : v);
+}
+
+// term_id numbers term_key(term_lower(tm)) by its nodes' numbers, so a
+// value its lets share keys once, not once per use: equal numbers are
+// equal keys, and KEY_LEN[n] is key n's length.
+const IDS = new Map<string, number>();
+export const KEY_LEN: number[] = [];
+
+export function term_id(tm: HTerm): number {
+  const ids = new Map<LTerm, number>();
+  const id = (t: LTerm): number => {
+    let n = ids.get(t);
+    if (n === undefined) {
+      let len = 0;
+      const k = JSON.stringify(t, (f, v) => {
+        if (f === "s") {
+          return undefined;
+        }
+        if (v === t || !v?.$) {
+          return v;
+        }
+        const c = id(v);
+        len += KEY_LEN[c] - `{"#":${c}}`.length;
+        return { "#": c };
+      });
+      n = IDS.get(k) ?? IDS.set(k, IDS.size).size - 1;
+      KEY_LEN[n] = k.length + len;
+      ids.set(t, n);
+    }
+    return n;
+  };
+  return id(term_lower(tm, 0, new Map()));
 }
 
 function f32_show(x: number): string {

@@ -665,8 +665,8 @@ function ty_holds(A: HTerm | null, p: Name | { tags: string; not: boolean },
     return true;
   }
   const xs = t.x.map((x, i) => vs[i] ? ty_key(x) : "");
-  const ys = w.on.get(t.k);
-  const re = !!ys && xs.some((x, i) => x.length > ys[i]);
+  const ls = xs.map((x) => x ? Bend.KEY_LEN[+x] : 0), ys = w.on.get(t.k);
+  const re = !!ys && ls.some((l, i) => l > ys[i]);
   const key = t.k + (!re && xs);
   const at = w.seen.get(key);
   if (tld?.$ !== "ADT" || at !== undefined) {
@@ -681,7 +681,7 @@ function ty_holds(A: HTerm | null, p: Name | { tags: string; not: boolean },
   w.seen.set(key, n);
   w.low = Infinity;
   const us = t.x.map((x, i) => re && vs[i] ? DUMMY : x);
-  w.on.set(t.k, xs.map((x, i) => Math.min(x.length, ys?.[i] ?? Infinity)));
+  w.on.set(t.k, ls.map((l, i) => Math.min(l, ys?.[i] ?? Infinity)));
   const r = tld.c.some((c) => ctr_doms(c, us).some((f) => ty_holds(f, p, w)));
   ys ? w.on.set(t.k, ys) : w.on.delete(t.k);
   if (r || w.low >= n) {
@@ -692,7 +692,7 @@ function ty_holds(A: HTerm | null, p: Name | { tags: string; not: boolean },
 }
 
 function ty_key(T: HTerm): string {
-  return memo(FL.keys, T, () => Bend.term_key(Bend.term_lower(T)));
+  return memo(FL.keys, T, () => "" + Bend.term_id(T));
 }
 
 function tld_of(k: Name): Bend.TLD {
