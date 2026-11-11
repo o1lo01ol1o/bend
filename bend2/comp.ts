@@ -2787,8 +2787,7 @@ function c_header(segs: Seg[], clos: string[]): string {
     `CONSTV u64 TAB_${i}[] = { ${r} };`)].join("\n\n");
 }
 
-// Expose output-wrapper elaboration separately so restored books can replay
-// the generated wrapper's dependencies before code generation.
+// The output wrapper's elaboration, apart, so a restored book can replay it
 export function prepare_book(book: Bend.Book, target: "js" | "c"): Bend.Book {
   return main_pure(book, target === "js");
 }
@@ -6391,24 +6390,14 @@ function io_park_on(fd, out, k, more, at = Infinity) {
 // scheduler resumes it; a settlement never runs Bend on the host's stack.
 function io_promise(io, promise, k) {
   io.pending += 1;
-  Promise.resolve(promise).then((x) => {
-    if (io.done) return;
-    if (x === undefined) {
-      io.errors.push("bend: a Promise effect returned undefined");
-    } else {
-      io_push(k, x, false, io);
-    }
-  }, (error) => {
-    if (!io.done) io.errors.push(error);
-  }).finally(() => {
-    io.pending -= 1;
-    io.wake?.();
-  });
+  Promise.resolve(promise).then((x) => io.done || (x === undefined
+    ? io.errors.push("bend: a Promise effect returned undefined")
+    : io_push(k, x, false, io)), (error) => io.done || io.errors.push(error))
+    .finally(() => (io.pending -= 1, io.wake?.()));
 }
 
-// Native descriptors have no JS notification. While Promises are parked,
-// poll them without blocking the event loop, at most 10ms apart. Timers and
-// Promise-only waits need no polling. Cancel the deadline on early wakeup.
+// While Promises are parked, native descriptors (which never notify JS) are
+// polled at most 10ms apart; a settlement wakes the loop early.
 function io_pending(io) {
   io_sync();
   const soon = io.waits[0]?.at ?? Infinity;
@@ -6416,26 +6405,20 @@ function io_pending(io) {
   const ms = Math.min(fds ? 10 : Infinity,
     Math.max(0, Math.ceil(soon - performance.now())));
   return new Promise((resolve) => {
-    let timer;
-    io.wake = () => {
-      clearTimeout(timer);
-      io.wake = undefined;
-      resolve();
-    };
-    if (ms !== Infinity) timer = setTimeout(io.wake, ms);
+    const timer = ms < Infinity && setTimeout(() => io.wake(), ms);
+    io.wake = () => (clearTimeout(timer), io.wake = undefined, resolve());
   });
 }
 
 async function io_run(m) {
-  const io = { runs: [], live: 0, waits: [], pending: 0, errors: [],
-    done: false, wake: undefined };
+  const io = { runs: [], live: 0, waits: [], pending: 0, errors: [] };
   const parent = io_active;
   io_active = io;
   try {
     io_push(run_loop(m()), (x) => ({ $: "Emit", value: x }), true);
     let look = 0;
     for (let n = 0;; n += 1) {
-      if (io.errors.length > 0) throw io.errors.shift();
+      if (io.errors.length) throw io.errors.shift();
       if (io.runs.length === 0) {
         if (io.live === 0) {
           return 0;
@@ -6443,19 +6426,18 @@ async function io_run(m) {
         if (io.pending > 0) {
           await io_pending(io);
           if (io.waits.length > 0) io_wait(io, false);
+        } else if (io.waits.length === 0) {
+          io_errs("bend: deadlock: every computation waits on a channel");
+          return 1;
         } else {
-          if (io.waits.length === 0) {
-            io_errs("bend: deadlock: every computation waits on a channel");
-            return 1;
-          }
           io_wait(io, true);
         }
         continue;
       }
-      // Runnable Bend threads must not starve host Promise timers either.
+      // Runnable threads yield to host Promise timers
       if ((n & 63) === 0 && io.pending > 0) {
         await new Promise((resolve) => setTimeout(resolve, 0));
-        if (io.errors.length > 0) throw io.errors.shift();
+        if (io.errors.length) throw io.errors.shift();
       }
       if ((n & 63) === 0 && io.waits.length > 0) {
         const now = performance.now();
@@ -6484,8 +6466,7 @@ async function io_run(m) {
           throw "bend: no effect registers " + op.$;
         }
         const x = run(...op.args, op.kont);
-        if (x !== null && (typeof x === "object" || typeof x === "function")
-          && typeof x.then === "function") {
+        if (typeof x?.then === "function") {
           io_promise(io, x, op.kont);
           break;
         }
