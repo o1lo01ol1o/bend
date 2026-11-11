@@ -800,62 +800,76 @@ export function term_higher(tm: LTerm, env: Env = null): HTerm {
 
 // term_lower is a term's first-order syntax at depth d; with low, a node
 // met again at a depth (a let's value at each use) lowers once, shared.
+// One function, so a deep term takes one JS frame per level, as unshared.
 export function term_lower(term: HTerm, d: number = 0, low?: Map<HTerm, LTerm[]>): LTerm {
   const tm = term_force(term);
-  if (low === undefined) {
-    return term_lower_at(tm, d);
+  const at = low && (low.get(tm) ?? low.set(tm, []).get(tm)!);
+  if (at?.[d] !== undefined) {
+    return at[d];
   }
-  const at = low.get(tm) ?? [];
-  low.set(tm, at);
-  return at[d] ??= term_lower_at(tm, d, low);
-}
-
-function term_lower_at(tm: HTerm, d: number, low?: Map<HTerm, LTerm[]>): LTerm {
+  let r: LTerm;
   switch (tm.$) {
     case "Let": {
       const xs = tm.k.map((k, j): HTerm => Var(k, d + j));
       const vs = tm.v.map((v) => term_lower(v, d, low));
-      return Let(tm.k, xs.map((_, j) => d + j), vs, term_lower(tm.f(xs), d + tm.k.length, low), tm.s, tm.q);
+      r = Let(tm.k, xs.map((_, j) => d + j), vs, term_lower(tm.f(xs), d + tm.k.length, low), tm.s, tm.q);
+      break;
     }
     case "Typ": {
-      return Typ(term_lower(tm.g, d, low), tm.s);
+      r = Typ(term_lower(tm.g, d, low), tm.s);
+      break;
     }
     case "Min": {
-      return Min(term_lower(tm.a, d, low), term_lower(tm.b, d, low), tm.s);
+      r = Min(term_lower(tm.a, d, low), term_lower(tm.b, d, low), tm.s);
+      break;
     }
     case "All": {
       const x: HTerm = Var(tm.k, d);
-      return All(tm.q, tm.k, d, term_lower(tm.A, d, low), term_lower(tm.B(x), d + 1, low), tm.s);
+      r = All(tm.q, tm.k, d, term_lower(tm.A, d, low), term_lower(tm.B(x), d + 1, low), tm.s);
+      break;
     }
     case "Lam": {
       const x: HTerm = Var(tm.k, d);
-      return Lam(tm.k, d, term_lower(tm.f(x), d + 1, low), tm.s, tm.q);
+      r = Lam(tm.k, d, term_lower(tm.f(x), d + 1, low), tm.s, tm.q);
+      break;
     }
     case "App": {
-      return App(term_lower(tm.f, d, low), term_lower(tm.x, d, low), tm.s);
+      r = App(term_lower(tm.f, d, low), term_lower(tm.x, d, low), tm.s);
+      break;
     }
     case "ADT": {
-      return ADT(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s, tm.r);
+      r = ADT(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s, tm.r);
+      break;
     }
     case "Ctr": {
-      return Ctr(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s);
+      r = Ctr(tm.k, tm.x.map((x) => term_lower(x, d, low)), tm.s);
+      break;
     }
     case "Mat": {
-      return Mat(tm.k, term_lower(tm.h, d, low), term_lower(tm.m, d, low), tm.s);
+      r = Mat(tm.k, term_lower(tm.h, d, low), term_lower(tm.m, d, low), tm.s);
+      break;
     }
     case "Eql": {
-      return Eql(term_lower(tm.a, d, low), term_lower(tm.b, d, low), term_lower(tm.T, d, low), tm.s);
+      r = Eql(term_lower(tm.a, d, low), term_lower(tm.b, d, low), term_lower(tm.T, d, low), tm.s);
+      break;
     }
     case "Rwt": {
-      return Rwt(term_lower(tm.e, d, low), term_lower(tm.p, d, low), term_lower(tm.f, d, low), tm.s);
+      r = Rwt(term_lower(tm.e, d, low), term_lower(tm.p, d, low), term_lower(tm.f, d, low), tm.s);
+      break;
     }
     case "Ann": {
-      return Ann(term_lower(tm.x, d, low), term_lower(tm.T, d, low), tm.s);
+      r = Ann(term_lower(tm.x, d, low), term_lower(tm.T, d, low), tm.s);
+      break;
     }
     default: {
-      return tm as LTerm;
+      r = tm as LTerm;
+      break;
     }
   }
+  if (at) {
+    at[d] = r;
+  }
+  return r;
 }
 
 // Ctx
@@ -1237,28 +1251,45 @@ export const KEY_LEN: number[] = [];
 
 export function term_id(tm: HTerm): number {
   const ids = new Map<LTerm, number>();
-  const id = (t: LTerm): number => {
-    let n = ids.get(t);
-    if (n === undefined) {
-      let len = 0;
-      const k = JSON.stringify(t, (f, v) => {
-        if (f === "s") {
-          return undefined;
-        }
-        if (v === t || !v?.$) {
-          return v;
-        }
-        const c = id(v);
-        len += KEY_LEN[c] - `{"#":${c}}`.length;
-        return { "#": c };
-      });
-      n = IDS.get(k) ?? IDS.set(k, IDS.size).size - 1;
-      KEY_LEN[n] = k.length + len;
-      ids.set(t, n);
+  const kids = (v: any, out: LTerm[]): LTerm[] => {
+    for (const f in v) {
+      const x = v[f];
+      if (f !== "s" && typeof x === "object" && x !== null) {
+        x.$ ? out.push(x) : kids(x, out);
+      }
     }
-    return n;
+    return out;
   };
-  return id(term_lower(tm, 0, new Map()));
+  // Post-order with an explicit stack: a deep term (a long literal in a
+  // type) keys its children first without a JS frame per level.
+  const root = term_lower(tm, 0, new Map());
+  const todo: [LTerm, boolean][] = [[root, false]];
+  while (todo.length > 0) {
+    const [t, ready] = todo.pop()!;
+    if (ids.has(t)) {
+      continue;
+    }
+    if (!ready) {
+      todo.push([t, true], ...kids(t, []).map((c): [LTerm, boolean] => [c, false]));
+      continue;
+    }
+    let len = 0;
+    const k = JSON.stringify(t, (f, v) => {
+      if (f === "s") {
+        return undefined;
+      }
+      if (v === t || !v?.$) {
+        return v;
+      }
+      const c = ids.get(v)!;
+      len += KEY_LEN[c] - `{"#":${c}}`.length;
+      return { "#": c };
+    });
+    const n = IDS.get(k) ?? IDS.set(k, IDS.size).size - 1;
+    KEY_LEN[n] = k.length + len;
+    ids.set(t, n);
+  }
+  return ids.get(root)!;
 }
 
 function f32_show(x: number): string {
