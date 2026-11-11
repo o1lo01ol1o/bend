@@ -2467,10 +2467,15 @@ function emit_fork(sc: Scope, x: Of<"Let">): void {
     const cargs = emit_args({ ...sc, rest: [chain[i]] }, c)
       .flatMap((v) => v.ws);
     const kn = seg_name("k");
+    // A frame past WIDE boxes its values, as fun_of does a wide call's
+    const mine = [...sc.uses].filter(([p]) => !i || p === o.ps[i - 1]);
+    const wide = mine.flatMap(([, b]) => b.val.ws).length + depth
+      + fun_of(c.k!).ret.ks.length > WIDE;
+    const ws = mine.flatMap(([p, b]) => (wide && b.val.ws.length > 1
+      && sc.uses.set(p, b = { ...b, val: val_new([emit_alias(sc,
+        val_box(sc, b.val), p.k, "box")], BOX) }),
+      pos.set(p, depth), depth += b.val.ws.length, b.val.ws));
     spare_flush(sc);
-    const ws = [...sc.uses].filter(([p]) => !i || p === o.ps[i - 1])
-      .flatMap(([p, b]) => (pos.set(p, depth), depth += b.val.ws.length,
-        b.val.ws));
     const kf = seg_fid(kn);
     emit_chain(sc, [["seq", () => {
       const fr = [...ws, seg_ref(sc, kf)];
