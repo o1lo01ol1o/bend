@@ -1496,8 +1496,10 @@ function val_own(v: Val, at: string | null = null, held = false): string[] {
   return v.ws;
 }
 
+// A (u32) read is a raw word in a slot another arm boxes
 function val_owned(v: Val): string[] {
-  return v.ws.filter((_, j) => v.lay.ks[j] === "box" && v.rs[j] === null);
+  return v.ws.filter((w, j) => v.lay.ks[j] === "box" && v.rs[j] === null
+    && !w.startsWith("(u32)"));
 }
 
 function val_sink(sc: Scope, v: Val): void {
