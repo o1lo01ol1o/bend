@@ -2559,6 +2559,7 @@ function emit_match(sc: Scope, x: Of<"Mat"> | Of<"Efq">,
   }
   const self = probe("s");
   const { adt, ret, rows, cells } = mat_rows(sc, x, ty, self);
+  src_add(adt.k);
   const word = WORDS[adt.k] === W32;
   const at = lay_at(adt, args[0]);
   const lay = word ? lay_node(adt.k) : lay_lazy(args[0], at) ? BOX : at;
