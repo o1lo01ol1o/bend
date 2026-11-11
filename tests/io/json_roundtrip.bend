@@ -159,4 +159,35 @@ def main():
 #|79>|   for r: Result<&1, &1, (U32 & String), JSON>
 #|   |                                         ^^^^
 #|80 |   U32
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : JSON
+#|Context:
+#|- at : U32
+#|Location: bad.rd
+#| 98 |   for at: U32
+#| 99>|   for r: Result<&1, &1, (U32 & String), JSON>
+#|    |                                         ^^^^
+#|100 |   U32
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : JSON
+#|Location: chk_access.rd
+#|115 | law chk_access.rd:
+#|116>|   for r: Result<&1, &1, (U32 & String), JSON>
+#|    |                                         ^^^^
+#|117 |   U32
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : JSON
+#|Location: access_score
+#|129 | law access_score:
+#|130>|   for v: JSON
+#|    |          ^^^^
+#|131 |   U32
+#|
+#|Found 4 errors. 4 defs that name a failed def were not checked.
 #|exit 1

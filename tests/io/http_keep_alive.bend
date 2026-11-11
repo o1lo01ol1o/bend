@@ -95,4 +95,30 @@ def main():
 #|23>|   a = b2u(HTTP.keep_alive(True{}, []))
 #|   |           ^^^^^^^^^^^^^^^
 #|24 |   b = b2u(HTTP.keep_alive(True{}, [("Connection", "close")]))
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : HTTP.get_header
+#|Context:
+#|- s  : U32
+#|- hs : List<&1, Sigma<&1, &1, String, _ => String>>
+#|- bd : String
+#|Location: conn_of.rd
+#|38 |   (s, hs, bd) = r
+#|39>|   HTTP.get_header("", "Connection", hs)
+#|   |   ^^^^^^^^^^^^^^^
+#|40 |
+#|
+#|Error:
+#|- expected : a def whose body is implemented before the def is used (defs are checked in file order, and an unfilled law has none)
+#|- observed : head_flag
+#|Context:
+#|- h : Sigma<&1, &1, Bool, _ => Sigma<&1, &1, String, _ => Sigma<&1, &1, String, _ => Sigma<&1, &1, List<&1, Sigma<&1, &1, String, _ => String>>, _ => U32>>>>
+#|Location: flag_of.rd
+#|60 |     case Done{h}:
+#|61>|       head_flag(h)
+#|   |       ^^^^^^^^^
+#|62 |     case Fail{(cd, e)}:
+#|
+#|Found 3 errors. 5 defs that name a failed def were not checked.
 #|exit 1

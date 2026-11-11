@@ -55,4 +55,15 @@ def main():
 #|20>|   HTTP.Router
 #|   |   ^^^^^^^^^^^
 #|21 |
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : HTTP.Router
+#|Location: main_route
+#|33 | law main_route:
+#|34>|   for r: HTTP.Router
+#|   |          ^^^^^^^^^^^
+#|35 |   IO(U32)
+#|
+#|Found 2 errors. 1 def that names a failed def was not checked.
 #|exit 1

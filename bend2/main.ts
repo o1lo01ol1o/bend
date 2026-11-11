@@ -1067,13 +1067,16 @@ function book_promises(book: Bend.Book,
   });
 }
 
-// term_refs adds to out the names a term (a span skipped) refers to.
-function term_refs(t: object, out: Set<string>): void {
+// term_refs adds to out the names a term (a span skipped) refers to; with
+// ctrs, a constructor or a match by its datatype too.
+function term_refs(t: object, out: Set<string>, ctrs?: Bend.Book["ctrs"]): void {
   const seen = new Set([t]);
   for (const todo = [t]; todo.length > 0;) {
     const x = todo.pop() as Record<string, unknown>;
     if ((x.$ === "Ref" || x.$ === "ADT") && typeof x.k === "string") {
       out.add(x.k);
+    } else if (ctrs && (x.$ === "Ctr" || x.$ === "Mat") && typeof x.k === "string") {
+      out.add(ctrs[x.k]?.f ?? x.k);
     }
     for (const f in x) {
       const v = x[f];
@@ -1141,7 +1144,7 @@ export async function book_read(file: string, unsafe_seed?: BookState,
       && !seen.has(fs.realpathSync(laws))) {
       throw "Error: PROOF.bend must import ./LAWS.bend";
     }
-    Bend.book_valid(book, done);
+    book_check(book, done);
     if (book.hols > 0) {
       throw "Error: " + String(book.hols) + " TODO" + (book.hols === 1 ? "" : "s")
         + " found.\nThe code is incomplete, and not a valid proof yet.";
@@ -1149,6 +1152,61 @@ export async function book_read(file: string, unsafe_seed?: BookState,
     return { book: unsafe_seed === undefined ? book : book_flat(book), seen, n0 };
   } catch (e) {
     throw new Check_Fail(e);
+  }
+}
+
+// book_check checks a book's events from done (book_valid), on past a
+// failed one to the end of its file and no further, so nothing past that
+// file is elaborated: the failed def turns opaque (bodiless, b), and an
+// event whose parsed terms name a failed or skipped def is skipped, so each
+// error is independent. One error throws as itself, more as Errs; each is
+// shown when it is met (txt), as the next events change the book.
+export type Errs = { $: "Errs"; errs: Shown[]; skipped: number };
+type Shown = Bend.Err & { txt?: string };
+
+export function book_check(book: Bend.Book, done = 0): void {
+  const errs: Shown[] = [];
+  const blocked = new Set<string>();
+  let file: Bend.File | undefined;
+  let skipped = 0;
+  // a body's file at its last event (a fill's), else its type's
+  const at = (t: Bend.TLD, fin: boolean) =>
+    (t.$ === "Def" && fin ? t.v?.s?.file : undefined) ?? t.T.s?.file;
+  Bend.book_valid(book, done, undefined, (k, t, fin, e) => {
+    const err = e as Bend.Err | undefined;
+    if (err !== undefined) {
+      if (err?.$ !== "Err") {
+        return;
+      }
+      file ??= at(t, fin);
+      errs.push({ ...err, txt: Bend.err_show(err) });
+      blocked.add(k);
+      if (t.$ === "Def") {
+        book.tlds[k] = { ...t, v: null, b: true };
+      }
+      return "on";
+    }
+    if (errs.length === 0) {
+      return "check";
+    }
+    if (at(t, fin) !== file || blocked.has(k)) {
+      return "skip";
+    }
+    const rs = new Set<string>();
+    const ts = t.$ === "ADT" ? [t.T, ...t.c.map((c) => c.T)] : fin && t.v ? [t.T, t.v] : [t.T];
+    ts.forEach((x) => term_refs(Bend.term_lower(x), rs, book.ctrs));
+    if ([...rs].some((r) => blocked.has(r))) {
+      blocked.add(k);
+      skipped += 1;
+      return "skip";
+    }
+    return "check";
+  });
+  if (errs.length > 1) {
+    throw { $: "Errs", errs, skipped } satisfies Errs;
+  }
+  if (errs.length === 1) {
+    throw errs[0];
   }
 }
 
@@ -1200,23 +1258,39 @@ async function book_run(book: Bend.Book, argv: string[]): Promise<number> {
   return 0;
 }
 
-export function book_err(e: unknown, checking = false): string {
+// book_err renders a failure; at, if given, adds a line after each checker
+// error (poc places a source position there).
+export function book_err(e: unknown, checking = false,
+  at?: (err: Bend.Err) => string | undefined): string {
   if (checking) {
-    return book_err(new Check_Fail(e));
+    return book_err(new Check_Fail(e), false, at);
   }
   if (e instanceof Check_Fail) {
-    return FAIL + "\n" + book_err(e.why);
+    return FAIL + "\n" + book_err(e.why, false, at);
+  }
+  const errs = e as Errs;
+  if (errs?.$ === "Errs") {
+    const n = errs.errs.length;
+    return errs.errs.map((err) => book_err(err, false, at)).join("\n\n")
+      + "\n\nFound " + String(n) + " errors."
+      + (errs.skipped === 0 ? "" : " " + String(errs.skipped)
+        + (errs.skipped === 1 ? " def that names a failed def was" : " defs that name a failed def were")
+        + " not checked.");
   }
   if (e instanceof AggregateError) {
     return e.errors.map((m) => Bun.inspect(m, { colors: false })).join("\n")
       || String(e);
   }
-  const err = e as Bend.Err;
+  const err = e as Shown;
   if (e instanceof RangeError) {
     return "Error: the machine stack overflowed (a deep recursion, or a"
       + " literal too large to expand)";
   }
-  return err?.$ === "Err" ? Bend.err_show(err) : String(e);
+  if (err?.$ !== "Err") {
+    return String(e);
+  }
+  const line = at?.(err);
+  return (err.txt ?? Bend.err_show(err)) + (line === undefined ? "" : "\n" + line);
 }
 
 // Load

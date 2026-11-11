@@ -83,4 +83,27 @@ def main():
 #|27>|       b2u(String.eq(Bytes.decode(bs), out))
 #|   |                     ^^^^^^^^^^^^
 #|28 |     case Fail{(c, e)}:
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : HTTP.unchunk
+#|Location: chk_chunked_bad
+#|51 | def chk_chunked_bad():
+#|52>|   dec_bad(HTTP.unchunk(Bytes.encode("4\r\nWi")))
+#|   |           ^^^^^^^^^^^^
+#|53 |
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : Bytes.decode
+#|Context:
+#|- n    : U32
+#|- data : List<&2, U32>
+#|Location: chk_pack.rd
+#|62 |   (n, data) = r
+#|63>|   (b2u(U32.is_eq(n, 10)) + b2u(String.eq(Bytes.decode(data), "héllo ✓")) : U32)
+#|   |                                          ^^^^^^^^^^^^
+#|64 |
+#|
+#|Found 3 errors. 3 defs that name a failed def were not checked.
 #|exit 1

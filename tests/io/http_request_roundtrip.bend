@@ -143,4 +143,40 @@ def main():
 #|39>|   (b2u(String.eq(m, "GET")) + b2u(String.eq(p, "/a")) + b2u(String.eq(HTTP.get_header("", "Host", hs), "x")) + b2u(String.eq(HTTP.get_header("", "ACCEPT", hs), "*/*")) : U32)
 #|   |                                                                       ^^^^^^^^^^^^^^^
 #|40 |
+#|
+#|Error:
+#|- expected : Maybe<&2, U32>
+#|- observed : U32
+#|Context:
+#|- m  : String
+#|- p  : String
+#|- hs : List<&1, Sigma<&1, &1, String, _ => String>>
+#|- b  : U32
+#|Location: rt_score
+#|63 |   (m, p, hs, b) = req
+#|64>|   (b2u(String.eq(m, "POST")) + b2u(String.eq(p, "/echo")) + b2u(U32.is_eq(Mb.default(&2, U32, 0, U32.read(HTTP.get_header("", "content-length", hs))), 5)) : U32)
+#|   |                                                                                               ^
+#|65 |
+#|
+#|Error:
+#|- expected : a def whose body is implemented before the def is used (defs are checked in file order, and an unfilled law has none)
+#|- observed : resp_status_is
+#|Context:
+#|- resp : Sigma<&1, &1, U32, _ => Sigma<&1, &1, List<&1, Sigma<&1, &1, String, _ => String>>, _ => U32>>
+#|Location: chk_response.rd
+#|92 |     case Done{resp}:
+#|93>|       resp_status_is(resp, 404)
+#|   |       ^^^^^^^^^^^^^^
+#|94 |     case Fail{(c, e)}:
+#|
+#|Error:
+#|- expected : a defined name
+#|- observed : HTTP.read_request
+#|Location: chk_bad
+#|123 | def chk_bad():
+#|124>|   chk_bad.rd(HTTP.read_request("GARBAGE\r\n"))
+#|    |              ^^^^^^^^^^^^^^^^^
+#|125 |
+#|
+#|Found 4 errors. 6 defs that name a failed def were not checked.
 #|exit 1
