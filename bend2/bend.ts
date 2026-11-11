@@ -1009,8 +1009,10 @@ export async function book_load(book: Book, file: string, ns: string, seen: Map<
   const body  = lines.slice();
   const al    : Record<Name, Name> = Object.create(null);
   const hub   = (s: string): boolean => /^0x[0-9a-f]+\//.test(s);
-  const ok    = (s: string, lib: boolean): boolean => hub(s) === lib
-    && /^(\/|(\.\.\/)*)([A-Za-z_][\w-]*\/)*[A-Za-z_][\w-]*$/.test(s.replace(/^0x[0-9a-f]+\//, ""));
+  // A written segment is a name; a resolved one may start with a digit, as
+  // a link into /nix/store/<hash>-source reaches a hash that often does.
+  const ok    = (s: string, lib: boolean, h = "A-Za-z_"): boolean => hub(s) === lib
+    && RegExp(`^(\\/|(\\.\\.\\/)*)([${h}][\\w-]*\\/)*[${h}][\\w-]*$`).test(s.replace(/^0x[0-9a-f]+\//, ""));
   for (let i = 0, at = 0; i < lines.length; at += lines[i].length + 1, i++) {
     const line = lines[i].trim();
     if (line === "" || line.startsWith("#")) {
@@ -1051,7 +1053,7 @@ export async function book_load(book: Book, file: string, ns: string, seen: Map<
     if ((in_lib && !hub(sub)) || (hub(ns) && !in_lib)) {
       throw Err(book, ctx_nil(), "an import on its side of the hub (a hub file imports only hub files, and a local path stays out of the hub's store)", "'" + m[1] + "'", sp);
     }
-    if (!ok(sub, in_lib)) {
+    if (!ok(sub, in_lib, "\\w")) {
       throw bad(" (resolves to '" + (in_lib ? got.slice(lib.length) : path.posix.relative(dir, got)) + "')");
     }
     al[m[2]] = sub;
